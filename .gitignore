@@ -1,0 +1,9 @@
+node_modules
+dist
+public/pyodide
+test-results
+playwright-report
+*.log
+.DS_Store
+.claude/
+scratch-t.mjs

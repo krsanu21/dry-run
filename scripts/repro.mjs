@@ -1,0 +1,17 @@
+import { chromium } from "@playwright/test";
+const browser = await chromium.launch({ channel: "chrome" });
+const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+await page.goto("http://localhost:5173/");
+await page.evaluate(() => localStorage.clear());
+await page.goto("http://localhost:5173/");
+await page.getByTestId("open-examples").click();
+await page.getByTestId("example-two-sum").click();
+await page.getByTestId("add-test").click();
+await page.getByTestId("arg-0").fill("[1, 5, 9]");
+await page.waitForTimeout(1000);
+console.log("LS tests:", await page.evaluate(() => JSON.parse(localStorage.getItem("dry-run:current") ?? "{}").tests?.length));
+await page.reload();
+await page.waitForTimeout(1000);
+console.log("chips after reload:", await page.locator(".test-chip").count());
+console.log("LS tests after reload:", await page.evaluate(() => JSON.parse(localStorage.getItem("dry-run:current") ?? "{}").tests?.length));
+await browser.close();
