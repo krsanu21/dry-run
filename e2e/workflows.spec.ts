@@ -309,3 +309,19 @@ test("14. watch expressions evaluate against snapshots only", async ({ page }) =
   await expect(rows.nth(1)).toContainText("not in scope");
   expectClean(w);
 });
+
+test("15. inputs accept Python literals: tuples, int-keyed dicts, None", async ({ page }) => {
+  const w = watchPage(page);
+  await freshApp(page);
+  await setCode(
+    page,
+    "from collections import defaultdict\n\ndef adj(edges):\n    g = defaultdict(list)\n    for a, b in edges:\n        g[a].append(b)\n        g[b].append(a)\n    return g\n",
+  );
+  await page.getByTestId("arg-0").fill("edges = [\n (1, 2),\n (1, 3),\n (2, 4),\n (2, 5),\n (3, 6)\n]");
+  await page.getByTestId("expected").fill("{\n 1: [2, 3],\n 2: [1, 4, 5],\n 3: [1, 6],\n 4: [2],\n 5: [2],\n 6: [3]\n}");
+  await runAndWait(page);
+  await page.getByTestId("dock-output").click();
+  await expect(page.getByTestId("match")).toContainText("match");
+  await expect(page.getByTestId("match")).not.toContainText("differs");
+  expectClean(w);
+});

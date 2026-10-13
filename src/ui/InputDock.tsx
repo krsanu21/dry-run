@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ArgConversion, RunMode } from "../trace/schema";
+import { toJson } from "../trace/literal";
 import { isTerminal, type Trace } from "../trace/store";
 import { formatValue } from "../trace/values";
 import {
@@ -134,7 +135,7 @@ function InputTab({ selection }: { selection: { from: number; to: number } | nul
                   className="arg-input mono"
                   value={test.args[i] ?? ""}
                   spellCheck={false}
-                  placeholder="JSON value, e.g. [1, 2, 3]"
+                  placeholder="e.g. [1, 2, 3] — JSON or Python literals like [(1, 2)], None"
                   onChange={(e) => {
                     const args = [...test.args];
                     while (args.length <= i) args.push("");
@@ -169,7 +170,7 @@ function InputTab({ selection }: { selection: { from: number; to: number } | nul
             <label htmlFor="expected" className="arg-name">
               expected <span className="dim">(optional)</span>
             </label>
-            <input id="expected" className="arg-input mono" value={test.expected} placeholder="JSON — compared with the actual result" onChange={(e) => updateTest(test.id, { expected: e.target.value })} data-testid="expected" />
+            <input id="expected" className="arg-input mono" value={test.expected} placeholder="compared with the actual result, e.g. {1: [2, 3]}" onChange={(e) => updateTest(test.id, { expected: e.target.value })} data-testid="expected" />
           </div>
         </>
       )}
@@ -235,7 +236,7 @@ function resultMatch(r: TestResult, expected: string): boolean | null {
   const rj = r.outcome?.summary.resultJson;
   if (rj === undefined || r.outcome?.summary.status !== "completed") return false;
   try {
-    return deepEq(JSON.parse(rj), JSON.parse(expected));
+    return deepEq(JSON.parse(rj), JSON.parse(toJson(expected) ?? expected));
   } catch {
     return rj.trim() === expected.trim();
   }
@@ -328,7 +329,7 @@ function OutputTab(): React.JSX.Element {
 function resultMatchFromJson(rj: string | undefined, status: string, expected: string): boolean {
   if (rj === undefined || status !== "completed") return false;
   try {
-    return deepEq(JSON.parse(rj), JSON.parse(expected));
+    return deepEq(JSON.parse(rj), JSON.parse(toJson(expected) ?? expected));
   } catch {
     return rj.trim() === expected.trim();
   }

@@ -3,6 +3,7 @@ import { JavaScriptAdapter } from "../adapters/javascript/adapter";
 import { PythonAdapter } from "../adapters/python/adapter";
 import type { LanguageAdapter, RunHandle } from "../adapters/types";
 import { exampleById } from "../examples";
+import { parseLiteral } from "../trace/literal";
 import type { ArgConversion, ExecutionRequest, Language, TraceEvent, Value } from "../trace/schema";
 import { Trace, isTerminal } from "../trace/store";
 import * as nav from "../trace/navigation";
@@ -266,16 +267,18 @@ export async function run(testId?: string): Promise<void> {
       toast(`Provide a JSON value for parameter "${fn?.params[missing]?.name ?? missing + 1}".`, "error");
       return;
     }
+    // Inputs may be JSON or Python/JS literals; the runtimes always receive strict JSON.
+    const normalized: string[] = [];
     for (let i = 0; i < args.length; i++) {
-      try {
-        JSON.parse(args[i] as string);
-      } catch {
-        toast(`Parameter "${fn?.params[i]?.name ?? i + 1}" is not valid JSON.`, "error");
+      const parsed = parseLiteral(args[i] as string);
+      if (!parsed.ok) {
+        toast(`Parameter "${fn?.params[i]?.name ?? i + 1}": ${parsed.error}`, "error");
         return;
       }
+      normalized.push(parsed.json);
     }
     request.entry = entry;
-    request.args = args;
+    request.args = normalized;
     request.argConversions = args.map((_, i) => effectiveConversion(test, fn, i, ws.language));
   } else if (ws.mode === "script") {
     request.stdin = test.stdin;
