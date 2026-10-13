@@ -30,6 +30,7 @@
   --read: #2fbf8f;
   --write: #ef6a45;
   --ptr: #d58bc0;
+  --heat: #2bb5aa;
   --ptr-bg: rgba(213, 139, 192, 0.16);
   --cur-line: rgba(232, 176, 74, 0.14);
   --cur-bar: #e8b04a;
@@ -80,6 +81,7 @@
     --read: #00876a;
     --write: #c8431b;
     --ptr: #a0447f;
+    --heat: #138a80;
     --ptr-bg: rgba(160, 68, 127, 0.1);
     --cur-line: rgba(232, 176, 74, 0.22);
     --cur-bar: #b97a12;
@@ -130,6 +132,7 @@
   --read: #00876a;
   --write: #c8431b;
   --ptr: #a0447f;
+  --heat: #138a80;
   --ptr-bg: rgba(160, 68, 127, 0.1);
   --cur-line: rgba(232, 176, 74, 0.22);
   --cur-bar: #b97a12;
@@ -1132,13 +1135,44 @@ input.num {
   padding: 0 4px;
   line-height: 14px;
   white-space: nowrap;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  position: relative;
 }
+/* a notch pointing down at the cell */
 .ptr-label span::after {
-  content: " ▾";
-  font-size: 8px;
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  margin-left: -4px;
+  border: 4px solid transparent;
+  border-top-color: var(--ptr);
+  border-bottom: 0;
+}
+.cells {
+  position: relative;
+}
+.cells > .cell {
+  z-index: 1;
+}
+.window-span {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  z-index: 0;
+  border: 1.5px solid color-mix(in srgb, var(--ptr) 75%, transparent);
+  background: color-mix(in srgb, var(--ptr) 14%, transparent);
+  border-radius: 6px;
+  transition: left var(--t-med) ease, width var(--t-med) ease;
+}
+.window-note {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ptr);
+}
+@media (prefers-reduced-motion: reduce) {
+  .window-span {
+    transition: none;
+  }
 }
 .ptr-label.is-manual span {
   border-style: dashed;
@@ -1241,9 +1275,10 @@ input.num {
 }
 .heat-bar {
   display: inline-block;
-  width: 90px;
-  height: 8px;
+  width: 120px;
+  height: 10px;
   border-radius: 2px;
+  border: 1px solid var(--line-2);
 }
 
 /* grids */
@@ -2395,11 +2430,9 @@ input.num {
 
 /* ---------- responsive ---------- */
 @media (max-width: 1100px) {
+  /* keep the inspector (stack, variables, watch, history, predict) reachable; cap the side columns instead */
   .workspace {
-    grid-template-columns: minmax(300px, 40%) 5px minmax(0, 1fr) 0 0;
-  }
-  .col-right {
-    display: none;
+    grid-template-columns: min(var(--left), 36%) 5px minmax(0, 1fr) 5px min(var(--right), 250px);
   }
   .tl-legend {
     display: none;
@@ -2531,6 +2564,361 @@ input.num {
     max-width: none;
   }
   .speed {
+    display: none;
+  }
+}
+
+/* ---------- errors in the editor ---------- */
+.problem-bar {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.problem-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--err) 45%, transparent);
+  background: var(--err-bg);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.problem-btn:hover {
+  border-color: var(--err);
+}
+.problem-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.problem-icon {
+  color: var(--err);
+  font-weight: 700;
+}
+.cm-error-lens {
+  /* width:0 + min-width:100% keeps long messages from widening the editor; they wrap to the visible width instead */
+  box-sizing: border-box;
+  width: 0;
+  min-width: calc(100% - 8px);
+  margin: 2px 0 6px;
+  padding: 6px 10px 7px;
+  border-left: 3px solid var(--err);
+  background: var(--err-bg);
+  border-radius: 0 6px 6px 0;
+  font-family: var(--sans, system-ui, sans-serif);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: normal;
+  cursor: default;
+}
+.cm-error-lens-warning {
+  border-left-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.cm-error-lens-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+.cm-error-lens-icon {
+  color: var(--err);
+  font-weight: 700;
+}
+.cm-error-lens-warning .cm-error-lens-icon {
+  color: var(--warn);
+}
+.cm-error-lens-kind {
+  font-weight: 650;
+  color: var(--err);
+}
+.cm-error-lens-warning .cm-error-lens-kind {
+  color: var(--warn);
+}
+.cm-error-lens-msg {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.cm-error-lens-where {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.cm-error-lens-hint {
+  margin-top: 3px;
+  color: var(--text-dim);
+}
+
+/* ---------- narrow columns: lay out by the column's width, not the viewport ---------- */
+.dock {
+  container-type: inline-size;
+}
+@container (max-width: 430px) {
+  .arg-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "name conv" "input input";
+    row-gap: 3px;
+    margin: 6px 0 8px;
+  }
+  .arg-row > .arg-name {
+    grid-area: name;
+  }
+  .arg-row > .arg-input {
+    grid-area: input;
+  }
+  .arg-row > .conv-select {
+    grid-area: conv;
+    max-width: 170px;
+  }
+}
+.side-tabs {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.side-tabs > .side-tab {
+  flex: 1 0 auto;
+  justify-content: center;
+}
+@media (max-width: 1100px) {
+  .side-tabs > .side-tab {
+    padding: 7px 6px 6px;
+    font-size: 12px;
+  }
+}
+
+/* ---------- following the action in large structures ---------- */
+.grid-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+.grid-body > .grid-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.grid-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-1);
+  /* cover the table's border-spacing and the scroller padding so scrolled cells don't peek through */
+  box-shadow: 0 -8px 0 var(--bg-1), -2px 0 0 var(--bg-1), 2px 0 0 var(--bg-1);
+}
+.grid-table tbody th {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-1);
+  padding-right: 2px;
+  box-shadow: -4px 0 0 var(--bg-1), 0 -2px 0 var(--bg-1), 0 2px 0 var(--bg-1), 2px 0 0 var(--bg-1);
+}
+.grid-table thead th.corner {
+  left: 0;
+  z-index: 3;
+}
+.grid-minimap {
+  position: relative;
+  flex: 0 0 auto;
+  margin-top: 6px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  cursor: pointer;
+  overflow: hidden;
+}
+.grid-minimap canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+.gm-window {
+  position: absolute;
+  border: 1.5px solid var(--text);
+  border-radius: 2px;
+  box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+.overview-1d {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -8px 2px 4px;
+}
+.ov1-track {
+  position: relative;
+  flex: 1;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--bg-3);
+  cursor: pointer;
+}
+.ov1-window {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  border: 1.5px solid var(--text-dim);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  pointer-events: none;
+}
+.ov1-mark {
+  position: absolute;
+  top: 2px;
+  width: 3px;
+  height: 6px;
+  margin-left: -1.5px;
+  border-radius: 1px;
+  pointer-events: none;
+}
+.ov1-mark.mk-pointer {
+  background: var(--ptr);
+  top: 0;
+  height: 10px;
+}
+.ov1-mark.mk-changed {
+  background: var(--chg);
+}
+.ov1-mark.mk-new {
+  background: var(--new);
+}
+.ov1-mark.mk-write {
+  background: var(--write);
+}
+.ov1-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- run outcome on the stage ---------- */
+.outcome-banner {
+  margin: 0 0 10px;
+  padding: 9px 12px 10px;
+  border: 1px solid var(--line-2);
+  border-left: 4px solid var(--ok);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--ok) 9%, var(--bg-1));
+}
+.outcome-banner.oc-bad {
+  border-left-color: var(--err);
+  background: var(--err-bg);
+}
+.outcome-banner.oc-warn {
+  border-left-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg-1));
+}
+.ob-head {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ob-head code {
+  font-weight: 500;
+}
+.outcome-banner .ok {
+  color: var(--ok);
+}
+.outcome-banner .bad {
+  color: var(--err);
+}
+.ob-advice,
+.ob-note {
+  margin: 5px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.outcome-banner .mini-btn {
+  margin-top: 7px;
+}
+.outcome-chip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  width: fit-content;
+  max-width: 100%;
+}
+.outcome-chip.oc-bad {
+  border-color: color-mix(in srgb, var(--err) 50%, transparent);
+}
+.outcome-chip.oc-warn {
+  border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+}
+.outcome-chip .ok {
+  color: var(--ok);
+}
+.outcome-chip .bad {
+  color: var(--err);
+}
+.final-note {
+  margin: 0 0 6px;
+  padding: 4px 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  border-left: 2px solid var(--line-2);
+}
+@keyframes lens-flash {
+  0%,
+  100% {
+    box-shadow: none;
+  }
+  30% {
+    box-shadow: 0 0 0 2px var(--err);
+  }
+}
+.editor-pane.flash-error .cm-error-lens,
+.editor-pane.flash-error .problem-btn {
+  animation: lens-flash 0.45s ease-in-out 2;
+}
+@media (prefers-reduced-motion: reduce) {
+  .editor-pane.flash-error .cm-error-lens,
+  .editor-pane.flash-error .problem-btn {
+    animation: none;
+  }
+}
+
+/* ---------- transport ---------- */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.icon-btn .icon {
+  flex: 0 0 auto;
+}
+.icon-btn.danger {
+  color: var(--err);
+}
+.ctl-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 0 4px;
+  border-right: 1px solid var(--line);
+}
+.ctl-group:first-child {
+  padding-left: 0;
+}
+.ctl-label {
+  font-size: 12px;
+}
+@media (max-width: 1100px) {
+  .ctl-label {
     display: none;
   }
 }

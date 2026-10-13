@@ -16,6 +16,7 @@ import {
   togglePlay,
   toStart,
 } from "./actions";
+import { Icon } from "./icons";
 import { useApp } from "./store";
 
 const SPEEDS = [1, 2, 4, 8, 16, 32, 64];
@@ -78,44 +79,54 @@ export function TraceBar(): React.JSX.Element {
   return (
     <div className="tracebar" role="toolbar" aria-label="Trace navigation">
       <div className="controls">
-        <button type="button" className="icon-btn" onClick={toStart} disabled={!hasTrace} title="Jump to start (Home)" aria-label="Jump to start">
-          ⏮
-        </button>
-        <button type="button" className="icon-btn" onClick={stepBackOver} disabled={!hasTrace} title="Step back over calls (↑)" aria-label="Step back over">
-          ⤺
-        </button>
-        <button type="button" className="icon-btn" onClick={stepBack} disabled={!hasTrace} title="Back one event (←)" aria-label="Back one event">
-          ◀
-        </button>
-        <button type="button" className={`icon-btn play${playing ? " is-on" : ""}`} onClick={togglePlay} disabled={!hasTrace} title="Play / pause (Space)" aria-label={playing ? "Pause" : "Play"} data-testid="play">
-          {playing ? "❚❚" : "▶"}
-        </button>
-        <button type="button" className="icon-btn" onClick={stepInto} disabled={!hasTrace} title="Step into — next event (→)" aria-label="Step into" data-testid="step-into">
-          ▶|
-        </button>
-        <button type="button" className="icon-btn" onClick={stepOver} disabled={!hasTrace} title="Step over — next event in this frame (↓)" aria-label="Step over" data-testid="step-over">
-          ⤼
-        </button>
-        <button type="button" className="icon-btn" onClick={stepOut} disabled={!hasTrace} title="Step out — return to caller (Shift+↓)" aria-label="Step out" data-testid="step-out">
-          ⤴
-        </button>
-        <button type="button" className="icon-btn" onClick={prevBreakpoint} disabled={!hasTrace} title="Previous breakpoint (Shift+N)" aria-label="Previous breakpoint">
-          ◂●
-        </button>
-        <button type="button" className="icon-btn" onClick={nextBreakpoint} disabled={!hasTrace} title="Run to next breakpoint (N)" aria-label="Run to next breakpoint" data-testid="next-bp">
-          ●▸
-        </button>
-        <button type="button" className="icon-btn" onClick={toEnd} disabled={!hasTrace} title="Jump to end (End)" aria-label="Jump to end">
-          ⏭
-        </button>
+        <div className="ctl-group" role="group" aria-label="Playback">
+          <button type="button" className="icon-btn" onClick={toStart} disabled={!hasTrace} title="Jump to start (Home)" aria-label="Jump to start">
+            <Icon name="start" />
+          </button>
+          <button type="button" className={`icon-btn play${playing ? " is-on" : ""}`} onClick={togglePlay} disabled={!hasTrace} title="Play / pause (Space)" aria-label={playing ? "Pause" : "Play"} data-testid="play">
+            <Icon name={playing ? "pause" : "play"} />
+          </button>
+          <button type="button" className="icon-btn" onClick={toEnd} disabled={!hasTrace} title="Jump to end (End)" aria-label="Jump to end">
+            <Icon name="end" />
+          </button>
+        </div>
+        <div className="ctl-group" role="group" aria-label="Stepping">
+          <button type="button" className="icon-btn" onClick={stepBackOver} disabled={!hasTrace} title="Step back over calls (↑)" aria-label="Step back over">
+            <Icon name="backOver" />
+          </button>
+          <button type="button" className="icon-btn labeled" onClick={stepBack} disabled={!hasTrace} title="Back one step (←)" aria-label="Back one step">
+            <Icon name="back" />
+            <span className="ctl-label">Back</span>
+          </button>
+          <button type="button" className="icon-btn labeled" onClick={stepInto} disabled={!hasTrace} title="Step into — the very next step, entering calls (→)" aria-label="Step into" data-testid="step-into">
+            <Icon name="into" />
+            <span className="ctl-label">Step</span>
+          </button>
+          <button type="button" className="icon-btn labeled" onClick={stepOver} disabled={!hasTrace} title="Step over — next line in this function, skipping calls (↓)" aria-label="Step over" data-testid="step-over">
+            <Icon name="over" />
+            <span className="ctl-label">Over</span>
+          </button>
+          <button type="button" className="icon-btn labeled" onClick={stepOut} disabled={!hasTrace} title="Step out — finish this call and return to the caller (Shift+↓)" aria-label="Step out" data-testid="step-out">
+            <Icon name="out" />
+            <span className="ctl-label">Out</span>
+          </button>
+        </div>
+        <div className="ctl-group" role="group" aria-label="Breakpoints">
+          <button type="button" className="icon-btn" onClick={prevBreakpoint} disabled={!hasTrace} title="Back to previous breakpoint hit (Shift+N)" aria-label="Previous breakpoint">
+            <Icon name="prevBp" />
+          </button>
+          <button type="button" className="icon-btn" onClick={nextBreakpoint} disabled={!hasTrace} title="Run to next breakpoint (N) — click a line number to set one" aria-label="Run to next breakpoint" data-testid="next-bp">
+            <Icon name="nextBp" />
+          </button>
+        </div>
         <button
           type="button"
-          className="icon-btn"
+          className={`icon-btn${recording ? " danger" : ""}`}
           onClick={() => (recording ? cancelRun() : void run())}
           title={recording ? "Stop execution" : "Restart: re-run with the current code and test (R)"}
           aria-label={recording ? "Stop execution" : "Restart"}
         >
-          {recording ? "■" : "↻"}
+          <Icon name={recording ? "stop" : "restart"} />
         </button>
         <label className="speed">
           <span className="sr-only">Playback speed</span>

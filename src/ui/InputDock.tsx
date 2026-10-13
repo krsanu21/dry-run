@@ -274,7 +274,7 @@ function OutputTab(): React.JSX.Element {
     <div className="output-tab" data-testid="output">
       <div className={`run-status rs-${summary?.status ?? status}`} data-testid="run-status">
         {status !== "done" ? (
-          <span>● {status === "starting" ? "starting runtime…" : `recording… ${trace.length} events`}</span>
+          <span>● {status === "starting" ? "starting runtime…" : `recording… ${trace.length} steps`}</span>
         ) : summary ? (
           <StatusLine trace={trace} />
         ) : null}
@@ -311,7 +311,7 @@ function OutputTab(): React.JSX.Element {
         <div className="limit-block" role="alert">
           <strong>Execution stopped:</strong> {last.limit?.message}
           <div className="dim small">
-            Limits: {prefs.maxEvents} events · {(prefs.timeoutMs / 1000).toFixed(0)} s · stack {prefs.maxStackDepth}. Change them in Settings (⚙). The {trace.length - 1} recorded steps before the stop are kept.
+            Limits: {prefs.maxEvents} steps · {(prefs.timeoutMs / 1000).toFixed(0)} s · stack {prefs.maxStackDepth}. Change them in Settings (⚙). The {trace.length - 1} recorded steps before the stop are kept.
           </div>
         </div>
       )}
@@ -326,7 +326,7 @@ function OutputTab(): React.JSX.Element {
   );
 }
 
-function resultMatchFromJson(rj: string | undefined, status: string, expected: string): boolean {
+export function resultMatchFromJson(rj: string | undefined, status: string, expected: string): boolean {
   if (rj === undefined || status !== "completed") return false;
   try {
     return deepEq(JSON.parse(rj), JSON.parse(toJson(expected) ?? expected));
@@ -339,7 +339,7 @@ function StatusLine({ trace }: { trace: Trace }): React.JSX.Element {
   const last = trace.last;
   const s = trace.summary;
   if (!last) return <span>No events recorded{s ? ` (${s.status})` : ""}.</span>;
-  if (last.type === "complete") return <span className="ok">✓ Completed · {trace.length} events · {s?.durationMs ?? 0} ms</span>;
+  if (last.type === "complete") return <span className="ok">✓ Completed · steps 0–{trace.length - 1} · {s?.durationMs ?? 0} ms</span>;
   if (last.type === "exception")
     return (
       <span className="bad">

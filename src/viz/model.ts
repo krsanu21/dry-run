@@ -62,7 +62,19 @@ export interface PointerMarker {
   outOfRange: boolean;
   /** user added this pointer manually */
   manual?: boolean;
+  /** not used as an index itself; shown as the partner of a bound that is (e.g. `left` beside `right`) */
+  partnerOf?: string;
 }
+
+/** Conventional pairs of range bounds. A range is drawn between them when both point into one sequence. */
+export const RANGE_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ["left", "right"],
+  ["l", "r"],
+  ["lo", "hi"],
+  ["low", "high"],
+  ["start", "end"],
+  ["begin", "end"],
+];
 
 export interface CellRef {
   /** index path: [i] for arrays, [r, c] for grids */
@@ -109,6 +121,12 @@ export interface VizPanel {
   nullPointers: string[];
   /** the source writes into this structure by index (e.g. `dp[i] = …`) — treated as a table */
   writtenByIndex: boolean;
+  /**
+   * Some line writes a cell from other cells of the same structure (`dp[i] = dp[i-1] + …`),
+   * i.e. reads index expressions it does not also write (a swap writes everything it reads).
+   * Value heat-maps are only meaningful for such tables.
+   */
+  recurrence: boolean;
   note?: string;
 }
 
@@ -428,6 +446,7 @@ function emptyPanel(key: string, kind: VizKind, autoKind: VizKind, value: Value)
     candidatePointers: [],
     nullPointers: [],
     writtenByIndex: false,
+    recurrence: false,
   };
 }
 
@@ -449,6 +468,14 @@ function decoratePanel(p: VizPanel, ctx: BuildContext, scope: Scope, accesses: I
   const len = lengthOfPanel(p, heap);
   const relevant = accesses.filter((a) => baseMatches(p, a.base, scope));
   p.writtenByIndex = relevant.some((a) => a.write);
+  const byLine = new Map<number, { w: Set<string>; r: Set<string> }>();
+  for (const a of relevant) {
+    if (a.kind === "loop") continue;
+    const e = byLine.get(a.line) ?? { w: new Set<string>(), r: new Set<string>() };
+    (a.write ? e.w : e.r).add(a.indices.join("][").replace(/\s+/g, ""));
+    byLine.set(a.line, e);
+  }
+  p.recurrence = [...byLine.values()].some((e) => e.w.size > 0 && [...e.r].some((k) => !e.w.has(k)));
   const subscripts = relevant.filter((a) => a.kind !== "loop");
   const ov = ctx.options.pointerOverrides[p.names[0] ?? p.key] ?? { add: [], hide: [] };
   const sizes = new Set(ctx.analysis?.sizeNames ?? []);
@@ -462,11 +489,19 @@ function decoratePanel(p: VizPanel, ctx: BuildContext, scope: Scope, accesses: I
     const names = new Set<string>();
     for (const a of relevant) for (const n of a.indexNames[0] ?? []) if (scalarInt(n) !== undefined) names.add(n);
     for (const n of ov.add) if (scalarInt(n) !== undefined) names.add(n);
+    // the other bound of a conventional pair (`left` when `right` indexes this sequence)
+    const partners = new Map<string, string>();
+    for (const [a, b] of RANGE_PAIRS) {
+      if (names.has(a) && !names.has(b) && scalarInt(b) !== undefined) partners.set(b, a);
+      if (names.has(b) && !names.has(a) && scalarInt(a) !== undefined) partners.set(a, b);
+    }
+    for (const n of partners.keys()) names.add(n);
     for (const n of ov.hide) names.delete(n);
     if (len !== undefined) {
       for (const n of names) {
         const i = scalarInt(n) as number;
-        p.pointers.push({ name: n, index: i, outOfRange: i < 0 || i >= len, ...(ov.add.includes(n) ? { manual: true } : {}) });
+        const partnerOf = partners.get(n);
+        p.pointers.push({ name: n, index: i, outOfRange: i < 0 || i >= len, ...(ov.add.includes(n) ? { manual: true } : {}), ...(partnerOf ? { partnerOf } : {}) });
       }
     }
     p.candidatePointers = allInts.filter((n) => !names.has(n));

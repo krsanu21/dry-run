@@ -206,7 +206,7 @@ describe("controls are keyboard accessible", () => {
         <TraceBar />
       </>,
     );
-    for (const label of ["Jump to start", "Back one event", "Step into", "Step over", "Step out", "Run to next breakpoint", "Jump to end"])
+    for (const label of ["Jump to start", "Back one step", "Step into", "Step over", "Step out", "Run to next breakpoint", "Jump to end"])
       expect(screen.getByLabelText(label)).toBeTruthy();
     act(() => {
       fireEvent.keyDown(window, { key: "ArrowRight" });

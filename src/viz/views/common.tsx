@@ -102,30 +102,23 @@ export function TruncationNote({ obj }: { obj: HeapObject | undefined }): React.
   return null;
 }
 
-// Colorblind-aware sequential scale (viridis stops).
-const VIRIDIS = ["#440154", "#482878", "#3e4989", "#31688e", "#26828e", "#1f9e89", "#35b779", "#6ece58", "#b5de2b", "#fde725"];
-
-function hexToRgb(h: string): [number, number, number] {
-  const n = Number.parseInt(h.slice(1), 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-}
-
+/**
+ * Value heat-map: one hue (--heat, teal) from no tint at the minimum to a strong
+ * tint at the maximum. Deliberately not amber/blue, which mean "changed"/"new";
+ * text keeps its normal colour so values stay readable in both themes.
+ */
 export function heatColor(t: number): { bg: string; fg: string } {
-  const x = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0)) * (VIRIDIS.length - 1);
-  const i = Math.min(VIRIDIS.length - 2, Math.floor(x));
-  const f = x - i;
-  const a = hexToRgb(VIRIDIS[i] as string);
-  const b = hexToRgb(VIRIDIS[i + 1] as string);
-  const c = a.map((av, k) => Math.round(av + ((b[k] as number) - av) * f)) as [number, number, number];
-  const lum = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
-  return { bg: `rgb(${c[0]}, ${c[1]}, ${c[2]})`, fg: lum > 0.55 ? "#111" : "#fff" };
+  const x = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+  const pct = Math.round(x * 62);
+  return { bg: pct === 0 ? "var(--bg-2)" : `color-mix(in srgb, var(--heat) ${pct}%, var(--bg-2))`, fg: "var(--text)" };
 }
 
 export function HeatLegend({ min, max }: { min: number; max: number }): React.JSX.Element {
   return (
-    <div className="heat-legend" aria-label={`Heatmap from ${min} to ${max}`}>
+    <div className="heat-legend" aria-label={`Shading by value, from ${min} (no tint) to ${max}`}>
+      <span className="dim">value</span>
       <span>{fmtNum(min)}</span>
-      <span className="heat-bar" style={{ background: `linear-gradient(90deg, ${VIRIDIS.join(",")})` }} />
+      <span className="heat-bar" style={{ background: "linear-gradient(90deg, var(--bg-2), color-mix(in srgb, var(--heat) 62%, var(--bg-2)))" }} />
       <span>{fmtNum(max)}</span>
     </div>
   );

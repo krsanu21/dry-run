@@ -1,6 +1,9 @@
 import { useMemo } from "react";
 import type { SequenceObject } from "../trace/schema";
 import { explainStep } from "../trace/describe";
+import * as nav from "../trace/navigation";
+import { isTerminal, type Trace } from "../trace/store";
+import { formatValue } from "../trace/values";
 import { buildPanels, VIZ_KIND_LABELS, type Binding, type VizKind, type VizPanel } from "../viz/model";
 import { ArrayView } from "../viz/views/ArrayView";
 import { HeapView, MapView, QueueView, SetView } from "../viz/views/CollectionViews";
@@ -9,6 +12,8 @@ import { GraphView } from "../viz/views/GraphView";
 import { GridView } from "../viz/views/GridView";
 import { LinkedListView, TreeView } from "../viz/views/LinkedViews";
 import { ObjectTree } from "../viz/views/ObjectTree";
+import { goto } from "./actions";
+import { resultMatchFromJson } from "./InputDock";
 import { store, useApp } from "./store";
 import { historicalNodeVars, useCurrentStep } from "./useTrace";
 
@@ -29,10 +34,11 @@ export function Canvas(): React.JSX.Element {
   const panels = useMemo(() => {
     if (!step) return [];
     const extra: Binding[] = [];
-    const ret = step.event.type === "complete" ? step.event.result : step.event.type === "return" && !step.event.yielded ? step.event.returnValue : undefined;
-    if (ret && ret.t === "ref") extra.push({ name: step.event.type === "complete" ? "result" : "↩ return value", value: ret, scope: "local" });
+    const src = step.state;
+    const ret = src.type === "complete" ? src.result : src.type === "return" && !src.yielded ? src.returnValue : undefined;
+    if (ret && ret.t === "ref") extra.push({ name: src.type === "complete" ? "result" : "↩ return value", value: ret, scope: "local" });
     return buildPanels({
-      event: step.event,
+      event: src,
       frame: step.frame,
       analysis,
       language,
@@ -91,6 +97,7 @@ export function Canvas(): React.JSX.Element {
           {predictionPending && <p className="sum-hint">Prediction pending: the next state is hidden until you submit.</p>}
         </div>
       </section>
+      <Outcome trace={step.trace} index={step.index} final={step.final} frameName={step.frame?.name} stateIndex={step.state.index} />
       {step.frame && step.event.stack.length > 1 && step.frame.id !== step.event.stack[step.event.stack.length - 1]?.id && (
         <div className="frame-banner">
           Showing variables of caller frame <strong>{step.frame.name}</strong>.{" "}
@@ -109,6 +116,88 @@ export function Canvas(): React.JSX.Element {
         </div>
       )}
       <ChangeLegend />
+    </div>
+  );
+}
+
+const LIMIT_ADVICE: Record<string, string> = {
+  events: "The program was still running when the step limit was reached — often a loop whose condition never becomes false, or an input too large to trace step by step. Step back to see what repeats; the limit can be raised in Settings.",
+  time: "The program was still running when the time limit was reached — often a loop that never ends, or work that grows too fast for this input. Step back to see what repeats; the limit can be raised in Settings.",
+  stack: "The call stack kept growing — usually recursion whose base case is missing or never reached. Look at the arguments of the deepest calls.",
+  cancelled: "You stopped this run. Everything recorded up to that point can still be inspected.",
+  memory: "The program used too much memory to keep tracing. Everything recorded up to that point can still be inspected.",
+  crash: "The runtime stopped unexpectedly. Everything recorded up to that point can still be inspected.",
+};
+
+/** Result of the run, shown on the stage: a full banner at the final step and a compact line elsewhere. */
+function Outcome({ trace, index, final, frameName, stateIndex }: { trace: Trace; index: number; final: boolean; frameName: string | undefined; stateIndex: number }): React.JSX.Element | null {
+  const outcome = useApp((s) => s.run.outcome);
+  const status = useApp((s) => s.run.status);
+  const mode = useApp((s) => s.ws.mode);
+  const lang = useApp((s) => s.ws.language);
+  const expected = useApp((s) => s.ws.tests.find((t) => t.id === s.run.testId)?.expected ?? "");
+  const last = trace.last;
+  if (status !== "done" || !last || !isTerminal(last)) return null;
+  const atEnd = index === trace.length - 1;
+  const summary = outcome?.summary;
+  const match = mode === "function" && last.type === "complete" && expected.trim() && summary ? resultMatchFromJson(summary.resultJson, summary.status, expected) : null;
+  const origin = nav.errorOrigin(trace);
+
+  let tone: "ok" | "bad" | "warn" = "ok";
+  let head: React.ReactNode;
+  if (last.type === "complete") {
+    tone = match === false ? "bad" : "ok";
+    head =
+      mode === "function" ? (
+        <>
+          {match === false ? "✕" : "✓"} Returned <code data-testid="outcome-result">{last.result ? formatValue(last.result, last.heap, lang, { maxLength: 120, maxDepth: 4 }) : "None"}</code>
+          {match !== null && (
+            <span className={match ? "ok" : "bad"}>
+              {" "}
+              {match ? "— matches expected" : <>— expected <code>{expected}</code></>}
+            </span>
+          )}
+        </>
+      ) : (
+        <>✓ Finished</>
+      );
+  } else if (last.type === "exception") {
+    tone = "bad";
+    head = (
+      <>
+        ✕ {last.exception?.type}: {last.exception?.message}
+        {last.exception?.line ? <span className="dim"> — line {last.exception.line}</span> : null}
+      </>
+    );
+  } else {
+    tone = "warn";
+    head = <>■ Stopped early: {last.limit?.kind === "events" ? `step limit reached after ${(trace.length - 1).toLocaleString()} steps` : last.limit?.kind === "stack" ? "call stack too deep" : last.limit?.kind === "time" ? "time limit reached" : last.limit?.kind === "cancelled" ? "stopped by you" : "runtime stopped"}</>;
+  }
+
+  if (!atEnd && !final) {
+    return (
+      <div className={`outcome-chip oc-${tone}`} data-testid="outcome-chip">
+        <span className="dim">Run result:</span> {head}
+        <button type="button" className="link-btn" onClick={() => goto(last.type === "exception" && origin >= 0 ? origin : trace.length - 1)}>
+          {last.type === "exception" ? "go to error" : "go to end"}
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className={`outcome-banner oc-${tone}`} role="status" data-testid="outcome-banner">
+      <div className="ob-head">{head}</div>
+      {last.type === "limit" && <p className="ob-advice">{LIMIT_ADVICE[last.limit?.kind ?? "events"]}</p>}
+      {final && frameName && (
+        <p className="ob-note dim">
+          {last.type === "exception" ? "Showing the state when it was raised" : `Showing the final state of ${frameName === "<module>" ? "the script" : frameName}`} (step {stateIndex}).
+        </p>
+      )}
+      {last.type === "exception" && origin >= 0 && index !== origin && (
+        <button type="button" className="mini-btn" onClick={() => goto(origin)} data-testid="goto-raise">
+          Go to the line that raised it
+        </button>
+      )}
     </div>
   );
 }
@@ -235,7 +324,7 @@ function PanelBody({ panel, indexVars }: { panel: VizPanel; indexVars: ReadonlyS
           prevItems={prevObj && "items" in prevObj ? prevObj.items : undefined}
           pointers={panel.pointers}
           cellRefs={panel.cellRefs}
-          heat={ctx.heatmap && panel.writtenByIndex}
+          heat={ctx.heatmap && panel.recurrence}
           variant={panel.kind === "pairs" ? "pairs" : "array"}
           label={`Array ${panel.names.join(", ")}`}
         />

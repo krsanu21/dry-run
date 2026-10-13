@@ -153,9 +153,18 @@ export function explainStep(prev: TraceEvent | undefined, cur: TraceEvent, diff:
     case "complete":
       now = cur.result ? `Finished. The entry point returned ${fv(cur.result, cur.heap, lang, 120)}.` : "Finished normally.";
       break;
-    case "limit":
-      now = `Stopped: ${cur.limit?.message ?? "resource limit"}`;
+    case "limit": {
+      const why: Record<string, string> = {
+        events: "the step limit was reached",
+        time: "the time limit was reached",
+        stack: "the call stack grew too deep",
+        cancelled: "you stopped it",
+        memory: "it used too much memory",
+        crash: "the runtime stopped unexpectedly",
+      };
+      now = `The run stopped here because ${why[cur.limit?.kind ?? ""] ?? "a limit was reached"}.`;
       break;
+    }
   }
 
   // Hints grounded in the recorded state.
@@ -164,13 +173,9 @@ export function explainStep(prev: TraceEvent | undefined, cur: TraceEvent, diff:
     if (!/^return\b/.test(text) && !/\breturn\b/.test(text))
       hints.push(`${frameLabel(top)} reached the end without a return statement, so it returns ${lang === "python" ? "None" : "undefined"}.`);
   }
-  if (cur.type === "exception") hints.push(`Look at the values used on line ${cur.loc.line} in the variables panel — step back (←) to see how they got there.`);
-  if (cur.type === "limit") {
-    if (cur.limit?.kind === "events") hints.push("Raise “Max events” in Settings, or use a smaller test case. Check loop conditions for a loop that never ends.");
-    else if (cur.limit?.kind === "time") hints.push("Raise the time limit in Settings, or look for a loop whose condition never becomes false.");
-    else if (cur.limit?.kind === "stack") hints.push("Recursion went deeper than the stack limit — check the base case, or raise “Max stack depth”.");
-    else if (cur.limit?.kind === "cancelled") hints.push("You stopped this run. The steps recorded so far are kept.");
-  }
+  // (terminal outcomes — uncaught exceptions and limits — are explained by the outcome banner)
+  if (cur.type === "exception" && !cur.exception?.uncaught)
+    hints.push(`Look at the values used on line ${cur.loc.line} in the variables panel — step back (←) to see how they got there.`);
   if (cur.type === "line" && prev && prev.type === "line" && prev.loc.line === cur.loc.line && changes.length === 0 && top?.id === prev.stack[prev.stack.length - 1]?.id)
     hints.push("The same line again with no visible state change — if this repeats, the loop may not be making progress.");
   return { happened, now, hints };

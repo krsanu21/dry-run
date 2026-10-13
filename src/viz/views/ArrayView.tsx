@@ -1,8 +1,10 @@
 import type { CellStatus, SequenceChange } from "../../trace/diff";
 import type { Truncation, Value } from "../../trace/schema";
 import { numberOf } from "../../trace/values";
-import type { CellRef, PointerMarker } from "../model";
+import { type CellRef, type PointerMarker, RANGE_PAIRS } from "../model";
+import { useMemo, useRef } from "react";
 import { cellText, fmtNum, HeatLegend, heatColor, useViz, ValueInline } from "./common";
+import { ArrayOverview, type MarkKind, useFollowFocus } from "./follow";
 
 export interface ArrayViewProps {
   items: readonly Value[];
@@ -22,6 +24,7 @@ export interface ArrayViewProps {
 
 const PTR_ROW = 18;
 
+
 /**
  * Indexed cells with pointer markers. Pointers are positioned absolutely so
  * they can glide between cells when motion is enabled; several pointers on
@@ -39,14 +42,25 @@ export function ArrayView(p: ArrayViewProps): React.JSX.Element {
 
   const inRange = p.pointers.filter((x) => !x.outOfRange);
   const outRange = p.pointers.filter((x) => x.outOfRange);
-  const stackPos = new Map<string, number>();
   const perIndex = new Map<number, number>();
-  for (const ptr of [...inRange].sort((a, b) => a.name.localeCompare(b.name))) {
-    const n = perIndex.get(ptr.index) ?? 0;
-    stackPos.set(ptr.name, n);
-    perIndex.set(ptr.index, n + 1);
+  for (const ptr of inRange) perIndex.set(ptr.index, (perIndex.get(ptr.index) ?? 0) + 1);
+  // Labels are as wide as their names (never truncated); a label that would overlap one
+  // already placed moves up a row.
+  const stackPos = new Map<string, number>();
+  const rowEnds: number[] = [];
+  for (const ptr of [...inRange].sort((a, b) => a.index - b.index || a.name.localeCompare(b.name))) {
+    const w = ptr.name.length * 7 + 14;
+    const x0 = ptr.index * step + cellW / 2 - w / 2;
+    let row = rowEnds.findIndex((end) => end + 3 <= x0);
+    if (row < 0) row = rowEnds.length;
+    rowEnds[row] = x0 + w;
+    stackPos.set(ptr.name, row);
   }
-  const ptrRows = Math.max(0, ...perIndex.values());
+  const ptrRows = rowEnds.length;
+  // A window between a conventional pair of bounds, e.g. left..right in a sliding window.
+  const byName = new Map(inRange.map((x) => [x.name, x.index] as const));
+  const windowPair = RANGE_PAIRS.find(([a, b]) => byName.has(a) && byName.has(b) && (byName.get(a) as number) <= (byName.get(b) as number));
+  const win = windowPair ? { from: byName.get(windowPair[0]) as number, to: byName.get(windowPair[1]) as number, label: `${windowPair[0]}..${windowPair[1]}` } : null;
 
   const nums = p.items.map((v) => numberOf(v));
   const numeric = p.heat && nums.length > 1 && nums.every((n) => n !== undefined);
@@ -55,21 +69,33 @@ export function ArrayView(p: ArrayViewProps): React.JSX.Element {
 
   const refAt = (i: number): CellRef[] => p.cellRefs.filter((c) => c.path[0] === i);
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useFollowFocus(scrollRef, ctx.event.index, ctx.reducedMotion);
+  const marks = useMemo(() => {
+    const out: Array<{ index: number; kind: MarkKind }> = [];
+    p.status?.forEach((st, i) => {
+      if (st !== "same") out.push({ index: i, kind: st === "new" ? "new" : "changed" });
+    });
+    for (const c of p.cellRefs) if (c.role === "write" && typeof c.path[0] === "number") out.push({ index: c.path[0], kind: "write" });
+    for (const ptr of p.pointers) if (!ptr.outOfRange) out.push({ index: ptr.index, kind: "pointer" });
+    return out;
+  }, [p.status, p.cellRefs, p.pointers]);
+
   return (
     <div className={`array-view array-${p.variant ?? "array"}`} role="group" aria-label={p.label}>
-      <div className="array-scroll">
+      <div className="array-scroll" ref={scrollRef}>
         <div className="array-track" style={{ width: Math.max(1, p.items.length) * step + 8 }}>
           {ptrRows > 0 && (
             <div className="ptr-layer" style={{ height: ptrRows * PTR_ROW + 6 }} aria-hidden="false">
               {inRange.map((ptr) => (
                 <div
                   key={ptr.name}
-                  className={`ptr-label${ptr.manual ? " is-manual" : ""}`}
+                  className={`ptr-label${ptr.manual || ptr.partnerOf ? " is-manual" : ""}`}
                   style={{
                     width: cellW,
                     transform: `translate(${ptr.index * step}px, ${(ptrRows - 1 - (stackPos.get(ptr.name) ?? 0)) * PTR_ROW}px)`,
                   }}
-                  title={`${ptr.name} = ${ptr.index}${ptr.manual ? " (added manually)" : " (used as an index into this structure)"}`}
+                  title={`${ptr.name} = ${ptr.index}${ptr.manual ? " (added manually)" : ptr.partnerOf ? ` (shown as the other bound of ${ptr.partnerOf}; hide it under Pointers)` : " (used as an index into this structure)"}`}
                   data-testid={`ptr-${ptr.name}`}
                   data-index={ptr.index}
                 >
@@ -79,6 +105,14 @@ export function ArrayView(p: ArrayViewProps): React.JSX.Element {
             </div>
           )}
           <div className="cells" style={{ gap }}>
+            {win && (
+              <div
+                className="window-span"
+                style={{ left: win.from * step - 4, width: (win.to - win.from) * step + cellW + 8 }}
+                title={`range ${win.label}: indices ${win.from}–${win.to} (${win.to - win.from + 1} items)`}
+                data-testid="window-span"
+              />
+            )}
             {p.items.length === 0 && <div className="empty-note">empty {p.variant === "string" ? "string" : "list"}</div>}
             {p.items.map((v, i) => {
               const st = p.status?.[i] ?? "same";
@@ -128,7 +162,13 @@ export function ArrayView(p: ArrayViewProps): React.JSX.Element {
           </div>
         </div>
       </div>
+      <ArrayOverview scrollRef={scrollRef} count={p.items.length} marks={marks} label={p.variant === "string" ? "chars" : "showing"} />
       <div className="array-foot">
+        {win && (
+          <span className="window-note" data-testid="window-note">
+            {win.label} = [{win.from}..{win.to}] · {win.to - win.from + 1} item{win.to === win.from ? "" : "s"}
+          </span>
+        )}
         {outRange.map((ptr) => (
           <span key={ptr.name} className="ptr-out" data-testid={`ptr-out-${ptr.name}`}>
             {ptr.name} = {ptr.index} {ptr.index < 0 ? "(before start)" : "(past end)"}

@@ -36,6 +36,8 @@ export interface Workspace {
   breakpoints: number[];
   fragment: FragmentConfig;
   exampleId?: string;
+  /** signature (`qualname(param, …)`) of the entry point the test cases were written for */
+  testsFor?: string;
   updatedAt: number;
 }
 
@@ -119,6 +121,8 @@ export interface AppState {
   prefs: Prefs;
   runtimeReady: boolean;
   navNote: string | null;
+  /** incremented to ask the editor to scroll to and highlight the first error */
+  revealError: number;
 }
 
 export function uid(): string {
@@ -186,6 +190,7 @@ function initialState(): AppState {
     prefs: DEFAULT_PREFS,
     runtimeReady: false,
     navNote: null,
+    revealError: 0,
   };
 }
 

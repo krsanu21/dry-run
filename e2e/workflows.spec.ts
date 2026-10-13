@@ -325,3 +325,117 @@ test("15. inputs accept Python literals: tuples, int-keyed dicts, None", async (
   await expect(page.getByTestId("match")).not.toContainText("differs");
   expectClean(w);
 });
+
+test("16. errors are written out under the line, with a hint, and cleared when stale", async ({ page }) => {
+  const w = watchPage(page);
+  await freshApp(page);
+  // syntax error while typing: shown live, before any run
+  await setCode(page, "def f(nums):\n    total = 0\n    for x in nums\n        total += x\n    return total\n");
+  const lens = page.getByTestId("error-lens");
+  await expect(lens).toContainText("SyntaxError", { timeout: 20_000 });
+  await expect(lens).toContainText("expected ':'");
+  await expect(lens).toContainText("line 3");
+  await expect(page.getByTestId("problem-bar")).toContainText("line 3");
+  // fixing it clears it
+  await setCode(page, "def f(nums):\n    d = {}\n    for x in nums:\n        d[x] = x\n        d[x].append(x)\n    return d\n");
+  await expect(lens).toHaveCount(0, { timeout: 20_000 });
+  // runtime error: message, hint, and where it was raised
+  await page.getByTestId("arg-0").fill("[1, 2]");
+  await runAndWait(page);
+  await expect(lens).toContainText("AttributeError");
+  await expect(lens).toContainText("'int' object has no attribute 'append'");
+  await expect(lens).toContainText("This value is a int");
+  await expect(lens).toContainText(/raised at step \d+/);
+  await expect(page.getByTestId("problem-bar")).toContainText("line 5");
+  await focusCanvas(page);
+  await page.keyboard.press("Home");
+  await page.getByTestId("goto-error-step").click();
+  await expect(page.getByTestId("goto-error-step")).toHaveCount(0);
+  // editing the code makes the run's error stale, so it disappears instead of pointing at a wrong line
+  await setCode(page, "def f(nums):\n    return nums\n");
+  await expect(lens).toHaveCount(0, { timeout: 20_000 });
+  await expect(page.getByTestId("problem-bar")).toHaveCount(0);
+  expectClean(w);
+});
+
+test("17. pasting a different problem starts fresh; Run explains syntax errors and missing entry points", async ({ page }) => {
+  const w = watchPage(page);
+  await freshApp(page);
+  await expect(page.locator(".tb-title")).toHaveText("Two Sum");
+  await expect(page.getByTestId("entry-select")).toHaveValue("Solution.twoSum", { timeout: 20_000 });
+  // a different problem: old arguments/expected no longer apply
+  await setCode(page, "class Solution:\n    def maxProfit(self, prices):\n        best, lo = 0, prices[0]\n        for p in prices:\n            lo = min(lo, p)\n            best = max(best, p - lo)\n        return best\n");
+  await expect(page.getByTestId("entry-select")).toHaveValue("Solution.maxProfit", { timeout: 20_000 });
+  await expect(page.locator(".tb-title")).toHaveText("Max Profit");
+  await expect(page.getByTestId("arg-0")).toHaveValue("");
+  await expect(page.getByTestId("expected")).toHaveValue("");
+  await expect(page.getByTestId("toast")).toContainText("started a fresh test case");
+  await page.getByTestId("arg-0").fill("[7, 1, 5, 3, 6, 4]");
+  // renaming keeps the test case
+  await setCode(page, "class Solution:\n    def bestProfit(self, prices):\n        best, lo = 0, prices[0]\n        for p in prices:\n            lo = min(lo, p)\n            best = max(best, p - lo)\n        return best\n");
+  await expect(page.getByTestId("entry-select")).toHaveValue("Solution.bestProfit", { timeout: 20_000 });
+  await expect(page.getByTestId("arg-0")).toHaveValue("[7, 1, 5, 3, 6, 4]");
+  // Run with a syntax error says why it can't run
+  await setCode(page, "class Solution:\n    def bestProfit(self, prices)\n        return 0\n");
+  await expect(page.getByTestId("error-lens")).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId("run").click();
+  await expect(page.getByTestId("toast")).toContainText("Can't run yet");
+  // no function at all: a plain-language message, not a harness error
+  await setCode(page, "x = 1\n");
+  await expect(page.getByTestId("error-lens")).toHaveCount(0, { timeout: 20_000 });
+  await page.getByTestId("run").click();
+  await expect(page.getByTestId("toast")).toContainText("No function or class Solution found");
+  expectClean(w);
+});
+
+test("18. phase 0: mid-width inspector, big grids finish and follow, error and final states, outcome banner, ranges", async ({ page }) => {
+  const w = watchPage(page);
+  // inspector stays reachable on a 1024px window
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await freshApp(page);
+  await runAndWait(page);
+  await expect(page.getByTestId("side-vars")).toBeVisible();
+  await expect(page.getByTestId("callstack")).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  // a 50x50 grid loop completes within the default limits and the view follows the active cell
+  await setCode(page, "def f(n):\n    g = [[0] * n for _ in range(n)]\n    for r in range(n):\n        for c in range(n):\n            g[r][c] = r + c\n    return g[n-1][n-1]\n");
+  await expect(page.getByTestId("entry-select")).toHaveValue("f", { timeout: 20_000 });
+  await page.getByTestId("arg-0").fill("50");
+  await runAndWait(page);
+  await focusCanvas(page);
+  await page.keyboard.press("End");
+  await expect(page.getByTestId("outcome-banner")).toContainText("Returned 98");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  const active = page.locator(".grid-scroll .is-active");
+  await expect(active).toHaveAttribute("data-testid", "gcell-49-49");
+  await expect(active).toBeInViewport();
+
+  // uncaught exception: the run lands on the raise point, variables are visible, the banner explains
+  await setCode(page, "def f(nums):\n    total = 0\n    for i in range(len(nums) + 1):\n        total += nums[i]\n    return total\n");
+  // same function name, edited parameter: the test case is kept (only its value changes here)
+  await expect(page.locator('label[for="arg-0"]')).toContainText("nums", { timeout: 20_000 });
+  await page.getByTestId("arg-0").fill("[1, 2, 3]");
+  await runAndWait(page);
+  await expect(page.getByTestId("step-now")).toContainText("IndexError");
+  await expect(page.getByTestId("variables")).toContainText("total");
+  await focusCanvas(page);
+  await page.keyboard.press("End");
+  await expect(page.getByTestId("outcome-banner")).toContainText("IndexError");
+  await expect(page.getByTestId("final-note")).toContainText("State when the exception was raised");
+  await expect(page.getByTestId("variables")).toContainText("total");
+  await page.getByTestId("goto-raise").click();
+  await expect(page.getByTestId("outcome-banner")).toHaveCount(0);
+
+  // a sliding window shows both bounds and the range between them
+  await loadExample(page, "sliding-window");
+  await runAndWait(page);
+  await focusCanvas(page);
+  for (let k = 0; k < 30; k++) await page.keyboard.press("ArrowRight");
+  await expect(page.getByTestId("ptr-left")).toBeVisible();
+  await expect(page.getByTestId("ptr-right")).toBeVisible();
+  await expect(page.getByTestId("window-note")).toContainText("left..right");
+  expectClean(w);
+});

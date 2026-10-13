@@ -131,11 +131,18 @@ export interface LimitInfo {
  * Wire event: what an adapter sends. Heap and stdout are deltas relative to the
  * previous event of the same run; the trace store reconstructs full snapshots.
  */
+/** A frame identical to the frame with the same id in the previous event (sent to avoid repeating deep stacks). */
+export interface SameFrame {
+  id: string;
+  same: true;
+}
+
 export interface WireEvent {
   type: EventType;
   line: number;
   col?: number;
-  stack: TraceFrame[];
+  /** Outermost first. An entry may be a SameFrame reference to the previous event's frame. */
+  stack: Array<TraceFrame | SameFrame>;
   /** User-defined globals when they are not already represented by a `<module>` stack frame. */
   globals?: Array<[string, Value]>;
   /** Objects that are new or changed since the previous event. */

@@ -15,6 +15,7 @@ import {
   highlightActiveLineGutter,
   keymap,
   lineNumbers,
+  WidgetType,
 } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 import { useEffect, useRef } from "react";
@@ -117,6 +118,113 @@ const traceField = StateField.define<{ deco: DecorationSet; gutter: RangeSet<Gut
 });
 
 // ---------------------------------------------------------------------------
+// Error lens: errors are written out in full beneath the offending line, so
+// they can be read without hovering and never cover the code.
+
+export interface EditorDiagnostic extends Diagnostic {
+  /** short explanation of what this kind of error usually means */
+  hint?: string;
+  /** where the error came from, e.g. "raised at step 41 (last step)" */
+  note?: string;
+}
+
+class ErrorLensWidget extends WidgetType {
+  constructor(private readonly d: EditorDiagnostic) {
+    super();
+  }
+  override eq(o: WidgetType): boolean {
+    return (
+      o instanceof ErrorLensWidget &&
+      o.d.kind === this.d.kind &&
+      o.d.message === this.d.message &&
+      o.d.hint === this.d.hint &&
+      o.d.note === this.d.note &&
+      o.d.severity === this.d.severity &&
+      o.d.column === this.d.column
+    );
+  }
+  override toDOM(): HTMLElement {
+    const d = this.d;
+    const el = document.createElement("div");
+    el.className = `cm-error-lens cm-error-lens-${d.severity}`;
+    el.setAttribute("role", d.severity === "error" ? "alert" : "status");
+    el.dataset.testid = "error-lens";
+    const head = document.createElement("div");
+    head.className = "cm-error-lens-head";
+    const icon = document.createElement("span");
+    icon.className = "cm-error-lens-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = d.severity === "error" ? "✕" : d.severity === "warning" ? "!" : "i";
+    const kind = document.createElement("span");
+    kind.className = "cm-error-lens-kind";
+    kind.textContent = d.kind;
+    const msg = document.createElement("span");
+    msg.className = "cm-error-lens-msg";
+    msg.textContent = d.message;
+    const where = document.createElement("span");
+    where.className = "cm-error-lens-where";
+    where.textContent = `line ${d.line}${d.column !== undefined ? `:${d.column + 1}` : ""}${d.note ? ` · ${d.note}` : ""}`;
+    head.append(icon, kind, msg, where);
+    el.append(head);
+    if (d.hint) {
+      const hint = document.createElement("div");
+      hint.className = "cm-error-lens-hint";
+      hint.textContent = d.hint;
+      el.append(hint);
+    }
+    return el;
+  }
+  override ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+const setErrorLens = StateEffect.define<EditorDiagnostic[]>();
+
+const errorLensField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    deco = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(setErrorLens)) continue;
+      const doc = tr.state.doc;
+      const seen = new Set<number>();
+      const ranges = e.value
+        .filter((d) => d.line >= 1 && d.line <= doc.lines && d.severity !== "info")
+        // one panel per line, errors first, at most four in total
+        .sort((a, b) => (a.severity === b.severity ? a.line - b.line : a.severity === "error" ? -1 : 1))
+        .filter((d) => (seen.has(d.line) ? false : (seen.add(d.line), true)))
+        .slice(0, 4)
+        .map((d) => Decoration.widget({ widget: new ErrorLensWidget(d), block: true, side: 1 }).range(doc.line(d.line).to))
+        .sort((a, b) => a.from - b.from);
+      deco = Decoration.set(ranges);
+    }
+    return deco;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+/** Squiggle range for a diagnostic: the reported span, else the line without its indentation; never zero-width. */
+function diagnosticRange(doc: EditorState["doc"], d: Diagnostic): { from: number; to: number } {
+  const line = doc.line(d.line);
+  const indent = /^\s*/.exec(line.text)?.[0].length ?? 0;
+  let from = d.column !== undefined ? Math.min(line.to, line.from + d.column) : line.from + indent;
+  let to = line.to;
+  if (d.endLine && d.endLine >= d.line && d.endLine <= doc.lines && (d.endLine !== d.line || (d.endColumn ?? 0) > (d.column ?? 0)))
+    to = Math.min(doc.line(d.endLine).to, doc.line(d.endLine).from + (d.endColumn ?? 0));
+  else if (d.column !== undefined && /Syntax|Indentation|Tab/.test(d.kind)) {
+    // a syntax error points at one position: mark the token there
+    const m = /^(\w+|\S)/.exec(line.text.slice(from - line.from));
+    to = from + (m ? m[0].length : 0);
+  }
+  if (to <= from) {
+    if (from < line.to) to = from + 1;
+    else if (from > line.from) from = Math.max(line.from + indent, from - 1);
+  }
+  return { from, to: Math.max(from, to) };
+}
+
+// ---------------------------------------------------------------------------
 // Highlighting via CSS variables so one style serves both themes
 
 const highlight = HighlightStyle.define([
@@ -141,6 +249,17 @@ const baseTheme = EditorView.theme({
   "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { backgroundColor: "var(--selection) !important" },
   "&.cm-focused": { outline: "none" },
   ".cm-cursor": { borderLeftColor: "var(--accent)" },
+  // diagnostics, themed to match the app instead of CodeMirror's light defaults
+  ".cm-tooltip": { backgroundColor: "var(--bg-3)", color: "var(--text)", border: "1px solid var(--line-2)", borderRadius: "6px", boxShadow: "var(--shadow)" },
+  ".cm-tooltip-lint": { padding: "0", maxWidth: "min(560px, 90vw)" },
+  ".cm-diagnostic": { padding: "6px 10px", borderLeft: "3px solid var(--text-faint)", fontFamily: "var(--mono)", fontSize: "12px", whiteSpace: "pre-wrap" },
+  ".cm-diagnostic-error": { borderLeftColor: "var(--err)" },
+  ".cm-diagnostic-warning": { borderLeftColor: "var(--warn)" },
+  ".cm-diagnostic-info": { borderLeftColor: "var(--focus)" },
+  ".cm-lintRange-error": { backgroundImage: "none", textDecoration: "underline wavy var(--err)", textDecorationSkipInk: "none", textUnderlineOffset: "3px", backgroundColor: "var(--err-bg)" },
+  ".cm-lintRange-warning": { backgroundImage: "none", textDecoration: "underline wavy var(--warn)", textDecorationSkipInk: "none", textUnderlineOffset: "3px" },
+  ".cm-lintRange-info": { backgroundImage: "none", textDecoration: "underline dotted var(--focus)", textUnderlineOffset: "3px" },
+  ".cm-lint-marker": { width: "0.9em", height: "0.9em" },
 });
 
 // ---------------------------------------------------------------------------
@@ -151,7 +270,9 @@ export interface EditorProps {
   readOnly: boolean;
   breakpoints: number[];
   traceMark: TraceMark | null;
-  diagnostics: Diagnostic[];
+  diagnostics: EditorDiagnostic[];
+  /** move the cursor to and scroll to this line; `n` changes on every request */
+  reveal?: { line: number; n: number } | null;
   onChange(value: string): void;
   onToggleBreakpoint(line: number): void;
   onBreakpointsMoved(lines: number[]): void;
@@ -179,6 +300,7 @@ export function CodeEditor(props: EditorProps): React.JSX.Element {
       extensions: [
         breakpointField,
         traceField,
+        errorLensField,
         gutter({
           class: "cm-bp-gutter",
           markers: (v) => v.state.field(breakpointField),
@@ -285,18 +407,25 @@ export function CodeEditor(props: EditorProps): React.JSX.Element {
     const v = view.current;
     if (!v) return;
     const doc = v.state.doc;
-    const diags: CmDiagnostic[] = props.diagnostics
-      .filter((d) => d.line >= 1 && d.line <= doc.lines)
-      .map((d) => {
-        const line = doc.line(d.line);
-        const from = Math.min(line.to, line.from + (d.column ?? 0));
-        let to = line.to;
-        if (d.endLine && d.endLine >= d.line && d.endLine <= doc.lines && (d.endLine !== d.line || (d.endColumn ?? 0) > (d.column ?? 0)))
-          to = Math.min(doc.line(d.endLine).to, doc.line(d.endLine).from + (d.endColumn ?? 0));
-        return { from, to: Math.max(from, to), severity: d.severity, message: `${d.kind}: ${d.message}` };
-      });
+    const inDoc = props.diagnostics.filter((d) => d.line >= 1 && d.line <= doc.lines);
+    const diags: CmDiagnostic[] = inDoc.map((d) => ({
+      ...diagnosticRange(doc, d),
+      severity: d.severity,
+      message: `${d.kind}: ${d.message}${d.hint ? `\n${d.hint}` : ""}`,
+    }));
     v.dispatch(setDiagnostics(v.state, diags));
+    v.dispatch({ effects: setErrorLens.of(inDoc) });
   }, [props.diagnostics]);
+
+  useEffect(() => {
+    const v = view.current;
+    const r = props.reveal;
+    if (!v || !r || r.line < 1 || r.line > v.state.doc.lines) return;
+    const line = v.state.doc.line(r.line);
+    const indent = /^\s*/.exec(line.text)?.[0].length ?? 0;
+    v.dispatch({ selection: { anchor: line.from + indent }, effects: EditorView.scrollIntoView(line.from, { y: "center" }) });
+    if (!v.state.readOnly) v.focus();
+  }, [props.reveal]);
 
   return <div ref={host} className="editor-host" data-testid="editor" />;
 }

@@ -181,7 +181,7 @@ function SettingsDialog(): React.JSX.Element {
   const prefs = useApp((s) => s.prefs);
   const setLimit = (k: keyof TraceLimits, v: number): void => store.set((s) => ({ prefs: { ...s.prefs, limits: { ...s.prefs.limits, [k]: v } } }));
   const limits: Array<[keyof TraceLimits, string, string]> = [
-    ["maxEvents", "Max recorded events", "Execution stops with a “limit” event after this many steps."],
+    ["maxEvents", "Step limit", "The run stops after recording this many steps (useful for loops that never end)."],
     ["timeoutMs", "Time limit (ms)", "Enforced by the tracer and by a watchdog that terminates the worker."],
     ["maxStackDepth", "Max stack depth", "Deep recursion stops cleanly before the engine overflows."],
     ["maxDepth", "Snapshot nesting depth", "Objects nested deeper are shown as “not captured”."],
@@ -339,9 +339,9 @@ export function payloadToWorkspace(p: SharePayload): Workspace {
 export const SHORTCUTS: Array<[string, string]> = [
   ["Ctrl/⌘ + Enter", "Run (works inside the editor too)"],
   ["R", "Restart — re-run current code and test"],
-  ["→", "Step into (next event)"],
-  ["←", "Back one event"],
-  ["↓", "Step over (next event in this frame)"],
+  ["→", "Step into (the very next step)"],
+  ["←", "Back one step"],
+  ["↓", "Step over (next line in this function)"],
   ["↑", "Step back over calls"],
   ["Shift + ↓", "Step out (to the caller)"],
   ["Space", "Play / pause"],
@@ -352,9 +352,9 @@ export const SHORTCUTS: Array<[string, string]> = [
   ["E", "Edit code (leave read-only tracing mode)"],
   ["P", "Toggle prediction mode"],
   ["Enter", "Submit prediction / next prediction"],
-  ["1 – 4", "Mobile: Code / Visual / Variables / Stack"],
+  ["1 – 4", "Narrow screens: Code / Visual / Variables / Stack"],
   ["?", "Show this sheet"],
-  ["Esc", "Close dialogs"],
+  ["Esc", "Close dialogs; stop a running program"],
 ];
 
 function ShortcutsDialog(): React.JSX.Element {

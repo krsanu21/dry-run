@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { loadCurrent, loadPrefs, saveCurrent, savePrefs } from "../persistence/db";
 import { decodeShare, shareTokenFromHash } from "../persistence/share";
 import type { Diagnostic } from "../trace/schema";
+import * as nav from "../trace/navigation";
 import { activeFrame, isTerminal } from "../trace/store";
 import { VizContext, type VizContextValue } from "../viz/views/common";
 import {
   cancelRun,
   getAdapters,
+  goto,
   loadWorkspace,
   nextBreakpoint,
   prevBreakpoint,
@@ -28,7 +30,8 @@ import {
 } from "./actions";
 import { Canvas } from "./Canvas";
 import { Dialogs, payloadToWorkspace } from "./Dialogs";
-import { CodeEditor, type TraceMark } from "./Editor";
+import { CodeEditor, type EditorDiagnostic, type TraceMark } from "./Editor";
+import { errorHint } from "./errorHints";
 import { CallStackPanel, HistoryPanel, InspectPanel, VariablesPanel, WatchPanel } from "./Inspector";
 import { InputDock } from "./InputDock";
 import { PredictionPanel, predictionKeySubmit } from "./Prediction";
@@ -51,7 +54,9 @@ export function useKeyboard(): void {
         return;
       }
       if (e.key === "Escape") {
-        if (store.get().dialog) store.set({ dialog: null });
+        const st = store.get();
+        if (st.dialog) store.set({ dialog: null });
+        else if (st.run.status === "running" || st.run.status === "starting") cancelRun();
         return;
       }
       if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -350,14 +355,45 @@ function EditorPane({ onSelection }: { onSelection(r: { from: number; to: number
   const hasTrace = !!step;
   const stale = hasTrace && sourceAtRun !== ws.source;
   const readOnly = hasTrace && !editing;
-  const diagnostics: Diagnostic[] = useMemo(() => {
-    const out = [...(analysis?.diagnostics ?? [])];
-    for (const d of outcome?.summary.diagnostics ?? []) if (!out.some((x) => x.line === d.line && x.message === d.message)) out.push(d);
-    const last = step?.trace.last;
-    if (last?.type === "exception" && last.exception?.uncaught && last.exception.line)
-      out.push({ severity: "error", kind: last.exception.type, message: last.exception.message, line: last.exception.line });
+  const runStale = sourceAtRun !== ws.source;
+  const [reveal, setReveal] = useState<{ line: number; n: number } | null>(null);
+  const diagnostics: EditorDiagnostic[] = useMemo(() => {
+    const withHint = (d: Diagnostic, note?: string): EditorDiagnostic => {
+      const hint = errorHint(d.kind, d.message, ws.language);
+      return { ...d, ...(hint ? { hint } : {}), ...(note ? { note } : {}) };
+    };
+    // Live analysis always matches the current text.
+    const out = (analysis?.diagnostics ?? []).map((d) => withHint(d));
+    // Results of the last run only describe the code as it was then; once the code changes their line numbers can be wrong.
+    if (!runStale) {
+      for (const d of outcome?.summary.diagnostics ?? []) if (!out.some((x) => x.line === d.line && x.message === d.message)) out.push(withHint(d));
+      const tr = step?.trace;
+      const last = tr?.last;
+      if (tr && last?.type === "exception" && last.exception?.uncaught && last.exception.line)
+        out.push(
+          withHint(
+            { severity: "error", kind: last.exception.type, message: last.exception.message, line: last.exception.line },
+            `raised at step ${Math.max(0, nav.errorOrigin(tr))}`,
+          ),
+        );
+    }
     return out;
-  }, [analysis, outcome, step?.trace]);
+  }, [analysis, outcome, step?.trace, runStale, ws.language]);
+  const problems = diagnostics.filter((d) => d.severity === "error");
+  const firstProblem = problems[0];
+  const revealError = useApp((s) => s.revealError);
+  const [flash, setFlash] = useState(false);
+  useEffect(() => {
+    if (!revealError || !firstProblem) return;
+    setReveal((r) => ({ line: firstProblem.line, n: (r?.n ?? 0) + 1 }));
+    setFlash(true);
+    const t = setTimeout(() => setFlash(false), 900);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealError]);
+  const lastEvent = step?.trace.last;
+  const runtimeError = !runStale && lastEvent?.type === "exception" && lastEvent.exception?.uncaught ? lastEvent : null;
+  const atRuntimeError = !!runtimeError && !!step && (step.index === nav.errorOrigin(step.trace) || step.index === runtimeError.index);
   const traceMark: TraceMark | null = useMemo(() => {
     if (!step || stale) return null;
     const ev = step.event;
@@ -368,7 +404,7 @@ function EditorPane({ onSelection }: { onSelection(r: { from: number; to: number
     return { line, kind, ...(prevLine !== undefined ? { prevLine } : {}) };
   }, [step, stale]);
   return (
-    <div className={`editor-pane${readOnly ? " is-readonly" : ""}`}>
+    <div className={`editor-pane${readOnly ? " is-readonly" : ""}${flash ? " flash-error" : ""}`}>
       <div className="editor-head">
         {readOnly ? (
           <>
@@ -395,7 +431,29 @@ function EditorPane({ onSelection }: { onSelection(r: { from: number; to: number
             </button>
           </span>
         )}
-        <span className="dim small editor-hint">click a line number to toggle a breakpoint</span>
+        {firstProblem ? (
+          <span className="problem-bar" data-testid="problem-bar">
+            <button
+              type="button"
+              className="problem-btn"
+              onClick={() => setReveal((r) => ({ line: firstProblem.line, n: (r?.n ?? 0) + 1 }))}
+              title="Show this line"
+            >
+              <span className="problem-icon" aria-hidden="true">
+                ✕
+              </span>
+              <b>{firstProblem.kind}</b> line {firstProblem.line}
+              {problems.length > 1 && <span className="dim"> · +{problems.length - 1} more</span>}
+            </button>
+            {runtimeError && !atRuntimeError && (
+              <button type="button" className="mini-btn" onClick={() => step && goto(nav.errorOrigin(step.trace))} data-testid="goto-error-step">
+                Go to error step
+              </button>
+            )}
+          </span>
+        ) : (
+          <span className="dim small editor-hint">click a line number to toggle a breakpoint</span>
+        )}
       </div>
       <CodeEditor
         value={ws.source}
@@ -404,6 +462,7 @@ function EditorPane({ onSelection }: { onSelection(r: { from: number; to: number
         breakpoints={ws.breakpoints}
         traceMark={traceMark}
         diagnostics={diagnostics}
+        reveal={reveal}
         onChange={setSource}
         onToggleBreakpoint={toggleBreakpoint}
         onBreakpointsMoved={setBreakpoints}
@@ -515,8 +574,8 @@ export function App(): React.JSX.Element {
     () =>
       step
         ? {
-            event: step.event,
-            prev: step.prev,
+            event: step.state,
+            prev: step.final ? undefined : step.prev,
             diff: step.diff,
             language,
             refCounts: step.refCounts,

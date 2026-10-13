@@ -20,6 +20,7 @@ import ast
 import builtins
 import collections
 import dis
+import itertools
 import json
 import sys
 import textwrap
@@ -129,6 +130,8 @@ class _Snapshot:
         self.count = 0
         self.items = 0
         self.item_budget = self.lim["maxObjects"] * 20
+        # sids whose encoding was reused from the previous event unchanged (no need to re-serialize them)
+        self.reused = set()
 
     def val(self, x, depth):
         tp = type(x)
@@ -176,9 +179,46 @@ class _Snapshot:
             out.append(e)
         return out, reason
 
+    def _reuse(self, sid, n, raw, flat, reason, depth):
+        """If the container's direct contents are the same objects as at the previous
+        snapshot, return its previous encoding (after queueing its children, whose own
+        contents may have changed). `flat` is the tuple of direct children; the cache
+        keeps them alive, so equal ids mean identical objects."""
+        c = self.t.enc_cache.get(sid) if self.t.use_cache else None
+        if c is None or c[0] != n or c[3] != reason or len(c[1]) != len(flat):
+            return None
+        if tuple(map(id, flat)) != c[2]:
+            return None
+        nd = depth + 1
+        for e in c[4]:
+            self.val(e, nd)
+        self.items += len(raw)
+        self.reused.add(sid)
+        return c[6]
+
+    def _remember(self, sid, n, flat, reason, depth, d):
+        prim = (int, float, str, bool, type(None))
+        refs = tuple(e for e in flat if type(e) not in prim)
+        self.t.enc_cache[sid] = (n, flat, tuple(map(id, flat)), reason, refs, None, d)
+
     def encode(self, x, sid, depth):
-        tname = type(x).__name__
+        tp = type(x)
+        if tp is list and self.t.use_cache and depth <= self.lim["maxDepth"] and self.count < self.lim["maxObjects"]:
+            # fast path for the common case: a short list whose items are the same objects as last time
+            c = self.t.enc_cache.get(sid)
+            n = len(x)
+            if (c is not None and c[0] == n and c[3] is None and n <= self.lim["maxItems"]
+                    and n <= self.item_budget - self.items and tuple(map(id, x)) == c[2]):
+                self.count += 1
+                self.items += n
+                nd = depth + 1
+                for e in c[4]:
+                    self.val(e, nd)
+                self.reused.add(sid)
+                return c[6]
+        tname = tp.__name__
         if depth > self.lim["maxDepth"] or self.count >= self.lim["maxObjects"]:
+            self.t.enc_cache.pop(sid, None)
             d = {"id": sid, "kind": "elided", "typeName": tname,
                  "reason": "depth" if depth > self.lim["maxDepth"] else "budget"}
             try:
@@ -199,19 +239,34 @@ class _Snapshot:
             else:
                 kind = "list"
             n = len(x)
-            raw, reason = self._items(x, n, depth)
+            cap = min(self.lim["maxItems"], self.item_budget - self.items)
+            flat = tuple(itertools.islice(x, max(0, cap))) if kind != "set" else tuple(x)[: max(0, cap)]
+            reason = None if len(flat) >= n else ("items" if cap >= self.lim["maxItems"] else "budget")
+            hit = self._reuse(sid, n, flat, flat, reason, depth)
+            if hit is not None:
+                return hit
+            raw, reason = self._items(itertools.islice(x, self.lim["maxItems"] + 1), n, depth)
             d = {"id": sid, "kind": kind, "typeName": tname, "items": [self.val(e, nd) for e in raw], "length": n}
             if reason:
                 d["truncated"] = {"reason": reason, "shown": len(raw), "total": n}
             if kind == "deque" and x.maxlen is not None:
                 d["maxlen"] = x.maxlen
+            if kind != "set":
+                self._remember(sid, n, tuple(raw), reason, depth, d)
             return d
         if isinstance(x, tuple):  # namedtuple → object with fields
             attrs = [[f, self.val(getattr(x, f), nd)] for f in x._fields]
             return {"id": sid, "kind": "object", "typeName": tname, "attrs": attrs}
         if isinstance(x, dict):
             n = len(x)
-            raw, reason = self._items(list(x.items()), n, depth)
+            cap = min(self.lim["maxItems"], self.item_budget - self.items)
+            pairs = list(itertools.islice(x.items(), max(0, cap)))
+            flat = tuple(itertools.chain.from_iterable(pairs))
+            reason = None if len(pairs) >= n else ("items" if cap >= self.lim["maxItems"] else "budget")
+            hit = self._reuse(sid, n, pairs, flat, reason, depth)
+            if hit is not None:
+                return hit
+            raw, reason = self._items(itertools.islice(x.items(), self.lim["maxItems"] + 1), n, depth)
             d = {"id": sid, "kind": "dict", "typeName": tname,
                  "entries": [[self.val(k, nd), self.val(v, nd)] for k, v in raw], "length": n}
             if reason:
@@ -219,6 +274,7 @@ class _Snapshot:
             if isinstance(x, collections.defaultdict):
                 f = x.default_factory
                 d["defaultFactory"] = getattr(f, "__name__", repr(f)) if f is not None else "None"
+            self._remember(sid, n, tuple(itertools.chain.from_iterable(raw)), reason, depth, d)
             return d
         if isinstance(x, (types.FunctionType, types.BuiltinFunctionType, types.MethodType, types.LambdaType)):
             return {"id": sid, "kind": "function", "typeName": tname, "repr": getattr(x, "__qualname__", tname)}
@@ -271,6 +327,11 @@ class Tracer:
         self.obj_ids = {}  # id(obj) -> (obj, sid); strong refs keep ids stable for the run
         self.next_obj = 1
         self.sent = {}  # sid -> json of last sent encoding
+        self.use_cache = True
+        self.frame_cache = {}  # fid -> (line, local names, ids of local values) at the previous event
+        self.prev_fids = set()  # frame ids present in the previous event
+        self.prev_top = None  # id of the innermost frame in the previous event
+        self.enc_cache = {}  # sid -> previous encoding of a container plus the children it was built from
         self.frame_ids = {}  # id(frame) -> fid (frames are alive while registered)
         self.next_frame = 1
         self.out_pending = []
@@ -337,6 +398,27 @@ class Tracer:
         return [(k, v) for k, v in items if not k.startswith(".") and not k.startswith("__dryrun")]
 
     @staticmethod
+    def _shared_vars_unchanged(f, code, prev):
+        shared = code.co_cellvars + code.co_freevars
+        if not shared:
+            return True
+        names, values = prev[0][1], prev[1]
+        try:
+            fl = f.f_locals
+        except Exception:
+            return False
+        for n in shared:
+            try:
+                i = names.index(n)
+            except ValueError:
+                if n in fl:
+                    return False  # became bound since the last step
+                continue
+            if n not in fl or fl[n] is not values[i]:
+                return False
+        return True
+
+    @staticmethod
     def _arg_names(code):
         n = code.co_argcount + code.co_kwonlyargcount
         if code.co_flags & 0x04:
@@ -359,21 +441,51 @@ class Tracer:
         snap = _Snapshot(self)
         frames = self._user_frames(frame) if stack_frames is None else stack_frames
         stack = []
+        prim = (int, float, str, bool, type(None))
+        cache = self.frame_cache
         for f in frames:
             code = f.f_code
+            fid = self.fid(f)
+            fline = (f.f_lineno if f is not frame else line) or code.co_firstlineno or 1
+            prev = cache.get(fid) if self.use_cache else None
+            if (prev is not None and f is not frame and fid != self.prev_top and fid in self.prev_fids
+                    and code.co_name != "<module>" and prev[0][0] == fline
+                    and self._shared_vars_unchanged(f, code, prev)):
+                # A caller that stayed suspended through the last step can only see its bindings change
+                # through cell/free variables (nonlocal); if those are the same objects, nothing changed.
+                for v in prev[1]:
+                    if type(v) not in prim:
+                        snap.val(v, 0)
+                stack.append({"id": fid, "same": True})
+                continue
+            pairs = self._frame_locals(f)
+            values = tuple(v for _, v in pairs)
+            key = (fline, tuple(k for k, _ in pairs), tuple(map(id, values)))
+            # `values` is kept in the cache so ids cannot be reused while compared
+            cache[fid] = (key, values)
+            if self.use_cache and prev is not None and prev[0] == key and fid in self.prev_fids:
+                # identical bindings and line: refer to the previous event's frame; still visit
+                # the referenced objects so their own changes are captured
+                for v in values:
+                    if type(v) not in prim:
+                        snap.val(v, 0)
+                stack.append({"id": fid, "same": True})
+                continue
             name = code.co_name
             if name == FRAGMENT_FN:
                 name = "<fragment>"
             entry = {
-                "id": self.fid(f),
+                "id": fid,
                 "name": name,
-                "line": (f.f_lineno if f is not frame else line) or code.co_firstlineno or 1,
+                "line": fline,
                 "args": self._arg_names(code) if name != "<module>" else [],
-                "locals": [[k, snap.val(v, 0)] for k, v in self._frame_locals(f)],
+                "locals": [[k, snap.val(v, 0)] for k, v in pairs],
             }
             if code.co_flags & CO_GENERATOR:
                 entry["isGenerator"] = True
             stack.append(entry)
+        self.prev_fids = {e["id"] for e in stack}
+        self.prev_top = stack[-1]["id"] if stack else None
         ev = {"type": etype, "line": line, "stack": stack}
         if (self.mode != "script" or stack_frames == []) and self.globals is not None:
             ev["globals"] = [[k, snap.val(v, 0)] for k, v in self._visible_globals(self.globals)]
@@ -386,6 +498,8 @@ class Tracer:
         objs = snap.drain()
         delta = {}
         for sid, d in objs.items():
+            if self.use_cache and sid in snap.reused and sid in self.sent:
+                continue  # same encoding as last time
             s = json.dumps(d, separators=(",", ":"))
             if self.sent.get(sid) != s:
                 self.sent[sid] = s
@@ -413,9 +527,9 @@ class Tracer:
         if self.out_pending:
             text = "".join(self.out_pending)
             self.out_pending = []
+            self._check_budget(frame, line)
             pev = self.build_event("stdout", frame, self.last_line or line)
             pev["out"] = text
-            self._check_budget(frame, line)
             self._emit_raw(pev)
         self._check_budget(frame, line)
         self._emit_raw(self.build_event(etype, frame, line, extra))
@@ -479,7 +593,8 @@ class Tracer:
                     extra["yielded"] = True
             self.emit("return", frame, line, extra)
             if not yielded:
-                self.frame_ids.pop(id(frame), None)
+                fid = self.frame_ids.pop(id(frame), None)
+                self.frame_cache.pop(fid, None)
         elif event == "exception":
             etype, evalue, tb = arg
             if isinstance(evalue, DryRunAbort):
@@ -666,6 +781,8 @@ def run(request_json, post):
     limits = req["limits"]
     mode = req["mode"]
     tracer = Tracer(limits, post)
+    # Test hook: disable the incremental caches so tests can compare against full re-encoding.
+    tracer.use_cache = not req.get("debugNoCache")
     tracer.mode = mode
     summary = {"status": "completed", "diagnostics": [], "durationMs": 0}
 

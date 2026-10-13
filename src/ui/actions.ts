@@ -57,8 +57,55 @@ export async function analyzeNow(): Promise<SourceAnalysis> {
   const result = await getAdapters()[ws.language].analyze(ws.source);
   // Store the result only if it still describes the current source (results can arrive out of order).
   const now = store.get();
-  if (`${now.ws.language}\u0000${now.ws.source}` === key && now.analysisFor !== key) store.set({ analysis: result, analysisFor: key });
+  if (`${now.ws.language}\u0000${now.ws.source}` === key && now.analysisFor !== key) {
+    store.set({ analysis: result, analysisFor: key });
+    reconcileTests(result);
+  }
   return result;
+}
+
+function signature(fn: FunctionInfo): string {
+  return `${fn.qualname}(${fn.params.map((p) => p.name).join(", ")})`;
+}
+
+function humanize(qualname: string): string {
+  const name = qualname.split(".").pop() ?? qualname;
+  const words = name.replace(/_/g, " ").replace(/([a-z0-9])([A-Z])/g, "$1 $2").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Untitled";
+}
+
+/**
+ * Keeps test cases tied to the function they were written for. When pasted code
+ * replaces that function with a different one (different name and parameters),
+ * the old arguments and expected value no longer apply, so a fresh case starts.
+ * A rename that keeps the parameters keeps the tests.
+ */
+function reconcileTests(analysis: SourceAnalysis): void {
+  const { ws } = store.get();
+  if (!analysis.ok || ws.mode !== "function") return;
+  const entry = resolvedEntry(analysis);
+  const fn = entry ? entryFunction(analysis, entry) : undefined;
+  if (!fn) return;
+  const sig = signature(fn);
+  if (!ws.testsFor) {
+    store.updateWs({ testsFor: sig });
+    return;
+  }
+  if (ws.testsFor === sig) return;
+  const oldName = ws.testsFor.slice(0, ws.testsFor.indexOf("("));
+  const oldParams = ws.testsFor.slice(ws.testsFor.indexOf("(") + 1, -1);
+  const stillThere = analysis.functions.some((f) => f.qualname === oldName);
+  const sameParams = oldParams === fn.params.map((p) => p.name).join(", ");
+  const retitle = ws.exampleId || ws.title === "Untitled" ? { title: humanize(fn.qualname), exampleId: undefined } : {};
+  if (stillThere || sameParams) {
+    // another function was added, or this one was renamed / its parameters edited: keep the tests
+    store.updateWs({ testsFor: sig, ...(stillThere ? {} : retitle) });
+    return;
+  }
+  const t = newTest("Case 1", fn.params.map(() => ""));
+  store.updateWs({ testsFor: sig, entry: fn.qualname, tests: [t], activeTestId: t.id, ...retitle });
+  store.set({ results: {} });
+  toast(`New function ${fn.qualname.split(".").pop()}(${fn.params.map((p) => p.name).join(", ")}) — started a fresh test case.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +253,8 @@ export function resolvedEntry(analysisOverride?: SourceAnalysis): string {
   const { ws } = store.get();
   const analysis = analysisOverride ?? store.get().analysis;
   if (ws.entry && analysis?.entryCandidates.includes(ws.entry)) return ws.entry;
+  // a successful analysis that found nothing callable means there is no entry point — never fall back to a stale one
+  if (analysis?.ok) return analysis.entryCandidates[0] ?? "";
   return analysis?.entryCandidates[0] ?? ws.entry;
 }
 
@@ -248,15 +297,15 @@ export async function run(testId?: string): Promise<void> {
   const test = ws.tests.find((t) => t.id === tid) ?? activeTest(s);
   if (!analysis.ok && analysis.diagnostics.some((d) => d.kind === "SyntaxError" || d.severity === "error")) {
     const d = analysis.diagnostics[0];
-    store.set({ editing: true });
-    toast(d ? `Syntax error on line ${d.line}: ${d.message}` : "Syntax error", "error");
+    store.set((st) => ({ editing: true, revealError: st.revealError + 1 }));
+    toast(d ? `Can't run yet — ${d.kind} on line ${d.line}: ${d.message}` : "Can't run yet — syntax error", "error");
     return;
   }
   const request: ExecutionRequest = { language: ws.language, source: ws.source, mode: ws.mode, limits: s.prefs.limits };
   if (ws.mode === "function") {
     const entry = resolvedEntry(analysis);
     if (!entry) {
-      toast("No function or Solution method found. Switch to Script mode to run top-level code.", "error");
+      toast("No function or class Solution found. Add one, or switch to Script mode to run top-level code.", "error");
       return;
     }
     const fn = entryFunction(analysis, entry);

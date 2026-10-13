@@ -124,7 +124,7 @@ export function VariablesPanel(): React.JSX.Element {
   const step = useCurrentStep();
   const showFunctions = useApp((s) => s.prefs.showFunctions);
   if (!step) return <div className="side-empty">Variables appear after a run.</div>;
-  const { event, frame, diff } = step;
+  const { state: event, frame, diff } = step;
   const isHidden = (v: Value): boolean => {
     if (showFunctions || v.t !== "ref") return false;
     const o = event.heap[v.id];
@@ -159,13 +159,18 @@ export function VariablesPanel(): React.JSX.Element {
   const frameRemoved = frame ? diff.vars.filter((c) => c.frameId === frame.id && c.kind === "removed").map((c) => c.name) : [];
   return (
     <div className="variables" data-testid="variables">
+      {step.final && frame && (
+        <p className="final-note" data-testid="final-note">
+          {step.event.type === "exception" ? "State when the exception was raised" : `Final state of ${frame.name === "<module>" ? "the script" : frame.name}`} (step {event.index})
+        </p>
+      )}
       {frame && section(frame.name === "<module>" ? "Globals" : `Locals of ${frame.name}`, frame.id, frame.locals, frameRemoved)}
       {frame?.closure && frame.closure.length > 0 && section("Closure (enclosing functions)", frame.id, frame.closure, [])}
       {event.globals.some(([, v]) => !isHidden(v)) && section("Globals", "globals", event.globals as Array<[string, Value]>, [])}
-      {event.type === "complete" && event.result && (
+      {step.event.type === "complete" && step.event.result && (
         <div className="var-section">
           <h4>Result</h4>
-          <VarRow name="result" v={event.result} frameId="result" status="same" ev={event} />
+          <VarRow name="result" v={step.event.result} frameId="result" status="same" ev={step.event} />
         </div>
       )}
     </div>
@@ -177,7 +182,7 @@ export function WatchPanel(): React.JSX.Element {
   const watches = useApp((s) => s.watches);
   const lang = useApp((s) => s.ws.language);
   const [draft, setDraft] = useState("");
-  const scope = step ? scopeForFrame(step.event, step.frame) : null;
+  const scope = step ? scopeForFrame(step.state, step.frame) : null;
   return (
     <div className="watch" data-testid="watch">
       <form
@@ -276,7 +281,7 @@ export function InspectPanel(): React.JSX.Element | null {
   const step = useCurrentStep();
   const id = useApp((s) => s.inspectId);
   if (!step || !id) return null;
-  const o = step.event.heap[id];
+  const o = step.state.heap[id];
   return (
     <div className="inspect" data-testid="inspect">
       <div className="history-head">

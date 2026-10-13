@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { SequenceObject, Value } from "../../trace/schema";
 import { numberOf } from "../../trace/values";
 import type { VizPanel } from "../model";
 import { cellText, changeOf, fmtNum, HeatLegend, heatColor, TruncationNote, useViz } from "./common";
+import { GridMinimap, type MarkKind, useFollowFocus } from "./follow";
 
 const OVERLAY_STYLES = ["ov-a", "ov-b", "ov-c", "ov-d"];
 
@@ -19,12 +20,34 @@ export function GridView({ panel }: { panel: VizPanel }): React.JSX.Element {
   const outer = panel.rootId ? heap[panel.rootId] : undefined;
   const [zoom, setZoom] = useState(1);
   const [hiddenOverlays, setHidden] = useState<Set<string>>(new Set());
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useFollowFocus(scrollRef, ctx.event.index, ctx.reducedMotion);
+  const marks = useMemo(() => {
+    const out: Array<{ r: number; c: number; kind: MarkKind }> = [];
+    const o = panel.rootId ? ctx.event.heap[panel.rootId] : undefined;
+    if (!o || (o.kind !== "list" && o.kind !== "tuple")) return out;
+    const oc = changeOf(ctx, panel.rootId);
+    o.items.forEach((rv, r) => {
+      if (rv.t !== "ref") return;
+      const row = ctx.event.heap[rv.id];
+      const rc = changeOf(ctx, rv.id);
+      const len = row && (row.kind === "list" || row.kind === "tuple") ? row.items.length : 0;
+      const whole = (rc && rc.isNew) || (oc && !oc.isNew && oc.kind === "sequence" && oc.status[r] !== "same");
+      for (let c = 0; c < len; c++) {
+        if (whole) out.push({ r, c, kind: "new" });
+        else if (rc && !rc.isNew && rc.kind === "sequence" && rc.status[c] && rc.status[c] !== "same") out.push({ r, c, kind: rc.status[c] === "new" ? "new" : "changed" });
+      }
+    });
+    for (const x of panel.cellRefs) if (x.role === "write" && typeof x.path[0] === "number" && typeof x.path[1] === "number") out.push({ r: x.path[0], c: x.path[1], kind: "write" });
+    for (const g of panel.gridPointers) out.push({ r: g.r, c: g.c, kind: "active" });
+    return out;
+  }, [ctx, panel]);
   if (!outer || (outer.kind !== "list" && outer.kind !== "tuple")) return <TruncationNote obj={outer} />;
   const rowObjs = outer.items.map((v) => (v.t === "ref" ? (heap[v.id] as SequenceObject | undefined) : undefined));
   const cols = Math.max(0, ...rowObjs.map((r) => r?.items.length ?? 0));
   const outerChange = changeOf(ctx, panel.rootId);
   const allNums = rowObjs.flatMap((r) => (r?.items ?? []).map((v) => numberOf(v)));
-  const numeric = ctx.heatmap && allNums.length > 1 && allNums.every((n) => n !== undefined) && panel.writtenByIndex;
+  const numeric = ctx.heatmap && allNums.length > 1 && allNums.every((n) => n !== undefined) && panel.recurrence;
   const nums = allNums as number[];
   const min = numeric ? Math.min(...nums) : 0;
   const max = numeric ? Math.max(...nums) : 0;
@@ -77,7 +100,8 @@ export function GridView({ panel }: { panel: VizPanel }): React.JSX.Element {
           </label>
         ))}
       </div>
-      <div className="grid-scroll">
+      <div className="grid-body">
+      <div className="grid-scroll" ref={scrollRef}>
         <table className={`grid-table${compact ? " compact" : ""}`} style={{ ["--cell" as string]: `${size}px` }}>
           <thead>
             <tr>
@@ -175,17 +199,19 @@ export function GridView({ panel }: { panel: VizPanel }): React.JSX.Element {
           </tbody>
         </table>
       </div>
+      <GridMinimap scrollRef={scrollRef} rows={rowObjs.length} cols={cols} marks={marks} stepKey={ctx.event.index} />
+      </div>
       <div className="array-foot">
         {panel.gridPointers.map((g) => (
           <span key={`${g.rowName},${g.colName}`} className="ptr-out">
             ({g.rowName}, {g.colName}) = ({g.r}, {g.c})
           </span>
         ))}
-        {[...panel.rowPointers, ...panel.colPointers]
+        {[...panel.rowPointers.map((x) => ({ ...x, axis: "row" })), ...panel.colPointers.map((x) => ({ ...x, axis: "column" }))]
           .filter((x) => x.outOfRange)
           .map((x) => (
-            <span key={x.name} className="ptr-out">
-              {x.name} = {x.index} (out of range)
+            <span key={`${x.axis}-${x.name}`} className="ptr-out">
+              {x.name} = {x.index} ({x.axis} out of range)
             </span>
           ))}
         {numeric && <HeatLegend min={min} max={max} />}

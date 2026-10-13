@@ -114,7 +114,16 @@ export class Trace {
       if (!this.objectFirstSeen.has(id)) this.objectFirstSeen.set(id, this.objectFirstSeen.size);
     }
     if (w.out) this.stdout += w.out;
-    const stack = deepFreeze(w.stack.map((f) => ({ ...f })));
+    let prevFrames: Map<string, TraceFrame> | undefined;
+    const stack = Object.freeze(
+      w.stack.map((f) => {
+        if (!("same" in f)) return deepFreeze({ ...f });
+        prevFrames ??= new Map((this.events[this.events.length - 1]?.stack ?? []).map((p) => [p.id, p] as const));
+        const prev = prevFrames.get(f.id);
+        if (!prev) throw new Error(`wire frame ${f.id} refers to a frame missing from the previous event`);
+        return prev;
+      }),
+    );
     const globals = deepFreeze((w.globals ?? []).map(([k, v]) => [k, v] as [string, Value]));
 
     // Reachability walk: the event heap holds exactly the objects reachable

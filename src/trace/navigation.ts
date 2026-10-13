@@ -1,4 +1,5 @@
-import type { Trace } from "./store";
+import type { TraceEvent } from "./schema";
+import { isTerminal, type Trace } from "./store";
 
 /**
  * Navigation over a recorded trace. Every function is a pure lookup into
@@ -119,21 +120,50 @@ export function lowerBound(arr: readonly number[], x: number): number {
  * The event the UI should land on after a run finishes: the raise point for
  * uncaught exceptions (full stack available there), otherwise the first event.
  */
+/** Index of the event where an uncaught exception was raised (start of the final propagation chain), or -1. */
+export function errorOrigin(trace: Trace): number {
+  const last = trace.last;
+  if (!last || last.type !== "exception" || !last.exception?.uncaught) return -1;
+  let j = trace.length - 2;
+  let firstOfChain = -1;
+  while (j >= 0) {
+    const ev = trace.events[j];
+    if (!ev) break;
+    if (ev.type === "exception") firstOfChain = j;
+    else if (!(ev.type === "return" && ev.unwind) && ev.type !== "stdout") break;
+    j--;
+  }
+  return firstOfChain;
+}
+
+/**
+ * Where to put the cursor after a run: the raise point of an uncaught exception,
+ * the stopping point of a limit, otherwise the start.
+ */
 export function initialFocus(trace: Trace): number {
   const last = trace.last;
   if (!last) return 0;
   if (last.type === "exception" && last.exception?.uncaught) {
-    // walk back to the first exception event of the final propagation chain
-    let j = trace.length - 2;
-    let firstOfChain = -1;
-    while (j >= 0) {
-      const ev = trace.events[j];
-      if (!ev) break;
-      if (ev.type === "exception") firstOfChain = j;
-      else if (!(ev.type === "return" && ev.unwind) && ev.type !== "stdout") break;
-      j--;
-    }
-    return firstOfChain >= 0 ? firstOfChain : trace.length - 1;
+    const o = errorOrigin(trace);
+    return o >= 0 ? o : trace.length - 1;
   }
+  if (last.type === "limit") return trace.length - 1;
   return 0;
+}
+
+/**
+ * The event whose program state should be displayed at `i`. Terminal events
+ * after the stack has unwound carry no frames, so they display the last live
+ * state instead: the raise point for an uncaught exception, otherwise the last
+ * event that still had frames.
+ */
+export function stateIndex(trace: Trace, i: number): number {
+  const ev = trace.events[i];
+  if (!ev || !isTerminal(ev) || ev.stack.length > 0) return i;
+  if (ev.type === "exception") {
+    const o = errorOrigin(trace);
+    if (o >= 0 && o < i) return o;
+  }
+  for (let j = i - 1; j >= 0; j--) if ((trace.events[j] as TraceEvent).stack.length > 0) return j;
+  return i;
 }
