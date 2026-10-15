@@ -1,20 +1,21 @@
 /**
- * Shareable URLs. The workspace (source + one test case) is JSON-encoded,
+ * Shareable URLs. The workspace (source + test cases) is JSON-encoded,
  * compressed with the browser's built-in deflate-raw CompressionStream and
  * stored in the URL *fragment* (`#share=…`). Fragments are not sent to the
  * server in HTTP requests. Opening a link never runs code automatically.
  */
-import type { ArgConversion, Language, RunMode } from "../trace/schema";
+import type { ArgConversion, Language } from "../trace/schema";
 
 export interface SharePayload {
   v: 1;
   language: Language;
   source: string;
-  mode: RunMode;
-  entry: string;
+  /** what Run runs: "" = decided from the code, "<file>", or a function's qualname */
+  target: string;
   title: string;
-  test: { name: string; args: string[]; expected: string; conversions: ArgConversion[]; stdin: string };
-  fragment?: { initialState: string; setup: string; startLine: number; endLine: number };
+  tests: { args: string[]; expected: string }[];
+  conversions: ArgConversion[];
+  stdin: string;
 }
 
 /** Conservative limit that works across browsers and chat/email clients. */
@@ -51,7 +52,6 @@ export async function encodeShare(p: SharePayload): Promise<string> {
 export class ShareDecodeError extends Error {}
 
 const LANGS = new Set(["python", "javascript"]);
-const MODES = new Set(["function", "script", "fragment"]);
 
 export function validatePayload(x: unknown): SharePayload {
   if (!x || typeof x !== "object") throw new ShareDecodeError("payload is not an object");
@@ -59,35 +59,27 @@ export function validatePayload(x: unknown): SharePayload {
   if (p.v !== 1) throw new ShareDecodeError("unsupported share version");
   if (typeof p.language !== "string" || !LANGS.has(p.language)) throw new ShareDecodeError("unknown language");
   if (typeof p.source !== "string" || p.source.length > 200_000) throw new ShareDecodeError("missing or oversized source");
-  if (typeof p.mode !== "string" || !MODES.has(p.mode)) throw new ShareDecodeError("unknown mode");
-  const t = p.test as Record<string, unknown> | undefined;
-  if (!t || !Array.isArray(t.args) || !t.args.every((a) => typeof a === "string")) throw new ShareDecodeError("invalid test case");
-  const conversions = Array.isArray(t.conversions) ? t.conversions.filter((c): c is ArgConversion => ["auto", "raw", "linked-list", "binary-tree"].includes(String(c))) : [];
-  const frag = p.fragment as Record<string, unknown> | undefined;
+  // links made before multiple cases were shared carry a single `test`
+  const raw = Array.isArray(p.tests) ? (p.tests as unknown[]) : [p.test];
+  const tests = raw.slice(0, 50).map((x) => {
+    const c = x as Record<string, unknown> | undefined;
+    if (!c || !Array.isArray(c.args) || !c.args.every((a) => typeof a === "string")) throw new ShareDecodeError("invalid test case");
+    return { args: c.args as string[], expected: typeof c.expected === "string" ? c.expected : "" };
+  });
+  if (!tests.length) throw new ShareDecodeError("invalid test case");
+  const t = (p.test ?? {}) as Record<string, unknown>;
+  const convs = Array.isArray(p.conversions) ? p.conversions : Array.isArray(t.conversions) ? t.conversions : [];
+  // links made before run targets existed carry a `mode` (+ `entry`) instead
+  const target = typeof p.target === "string" ? p.target : p.mode === "script" ? "<file>" : p.mode === "function" && typeof p.entry === "string" ? p.entry : "";
   return {
     v: 1,
     language: p.language as Language,
     source: p.source,
-    mode: p.mode as RunMode,
-    entry: typeof p.entry === "string" ? p.entry : "",
+    target,
     title: typeof p.title === "string" ? p.title.slice(0, 120) : "Shared solution",
-    test: {
-      name: typeof t.name === "string" ? t.name.slice(0, 80) : "Shared case",
-      args: t.args as string[],
-      expected: typeof t.expected === "string" ? t.expected : "",
-      conversions,
-      stdin: typeof t.stdin === "string" ? t.stdin : "",
-    },
-    ...(frag && typeof frag.initialState === "string"
-      ? {
-          fragment: {
-            initialState: frag.initialState,
-            setup: typeof frag.setup === "string" ? frag.setup : "",
-            startLine: Number(frag.startLine) || 1,
-            endLine: Number(frag.endLine) || 1,
-          },
-        }
-      : {}),
+    tests,
+    conversions: convs.filter((c): c is ArgConversion => ["auto", "raw", "linked-list", "binary-tree"].includes(String(c))),
+    stdin: typeof p.stdin === "string" ? p.stdin : typeof t.stdin === "string" ? t.stdin : "",
   };
 }
 

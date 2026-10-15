@@ -29,7 +29,7 @@ interface Spec {
 const fromExample = (id: string): Spec => {
   const ex = EXAMPLES.find((e) => e.id === id);
   if (!ex) throw new Error(id);
-  return { name: id, language: ex.language, source: ex.source, mode: ex.mode, entry: ex.entry, args: ex.tests[0]?.args, conversions: ex.tests[0]?.conversions as Spec["conversions"] };
+  return { name: id, language: ex.language, source: ex.source, mode: ex.entry ? "function" : "script", entry: ex.entry, args: ex.tests[0]?.args, conversions: ex.conversions as Spec["conversions"] };
 };
 
 const SPECS: Spec[] = [

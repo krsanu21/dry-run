@@ -91,31 +91,31 @@ export function TraceBar(): React.JSX.Element {
           </button>
         </div>
         <div className="ctl-group" role="group" aria-label="Stepping">
-          <button type="button" className="icon-btn" onClick={stepBackOver} disabled={!hasTrace} title="Step back over calls (↑)" aria-label="Step back over">
+          <button type="button" className="icon-btn" onClick={stepBackOver} disabled={!hasTrace} title="Previous line in this function, skipping calls (↑)" aria-label="Previous line">
             <Icon name="backOver" />
           </button>
-          <button type="button" className="icon-btn labeled" onClick={stepBack} disabled={!hasTrace} title="Back one step (←)" aria-label="Back one step">
+          <button type="button" className="icon-btn labeled" onClick={stepBack} disabled={!hasTrace} title="Back one step (←)" aria-label="Back">
             <Icon name="back" />
             <span className="ctl-label">Back</span>
           </button>
-          <button type="button" className="icon-btn labeled" onClick={stepInto} disabled={!hasTrace} title="Step into — the very next step, entering calls (→)" aria-label="Step into" data-testid="step-into">
+          <button type="button" className="icon-btn labeled" onClick={stepInto} disabled={!hasTrace} title="Next step, going into calls (→)" aria-label="Next" data-testid="step-into">
             <Icon name="into" />
-            <span className="ctl-label">Step</span>
+            <span className="ctl-label">Next</span>
           </button>
-          <button type="button" className="icon-btn labeled" onClick={stepOver} disabled={!hasTrace} title="Step over — next line in this function, skipping calls (↓)" aria-label="Step over" data-testid="step-over">
+          <button type="button" className="icon-btn labeled" onClick={stepOver} disabled={!hasTrace} title="Next line in this function, skipping over calls (↓)" aria-label="Next line" data-testid="step-over">
             <Icon name="over" />
-            <span className="ctl-label">Over</span>
+            <span className="ctl-label">Next line</span>
           </button>
-          <button type="button" className="icon-btn labeled" onClick={stepOut} disabled={!hasTrace} title="Step out — finish this call and return to the caller (Shift+↓)" aria-label="Step out" data-testid="step-out">
+          <button type="button" className="icon-btn labeled" onClick={stepOut} disabled={!hasTrace} title="Finish this call and return to the caller (Shift+↓)" aria-label="Finish call" data-testid="step-out">
             <Icon name="out" />
-            <span className="ctl-label">Out</span>
+            <span className="ctl-label">Finish call</span>
           </button>
         </div>
         <div className="ctl-group" role="group" aria-label="Breakpoints">
-          <button type="button" className="icon-btn" onClick={prevBreakpoint} disabled={!hasTrace} title="Back to previous breakpoint hit (Shift+N)" aria-label="Previous breakpoint">
+          <button type="button" className="icon-btn" onClick={prevBreakpoint} disabled={!hasTrace} title="Previous breakpoint (Shift+N)" aria-label="Previous breakpoint">
             <Icon name="prevBp" />
           </button>
-          <button type="button" className="icon-btn" onClick={nextBreakpoint} disabled={!hasTrace} title="Run to next breakpoint (N) — click a line number to set one" aria-label="Run to next breakpoint" data-testid="next-bp">
+          <button type="button" className="icon-btn" onClick={nextBreakpoint} disabled={!hasTrace} title="Next breakpoint (N) — click a line number to set one" aria-label="Next breakpoint" data-testid="next-bp">
             <Icon name="nextBp" />
           </button>
         </div>

@@ -21,6 +21,9 @@ import { tags as t } from "@lezer/highlight";
 import { useEffect, useRef } from "react";
 import type { Diagnostic, Language } from "../trace/schema";
 import { isLineInDoc, lineAt } from "./lines";
+import { type PeekProvider, peekExtension } from "./peekExtension";
+
+export type { PeekProvider } from "./peekExtension";
 
 // ---------------------------------------------------------------------------
 // Breakpoints
@@ -267,17 +270,16 @@ const baseTheme = EditorView.theme({
 export interface EditorProps {
   value: string;
   language: Language;
-  readOnly: boolean;
   breakpoints: number[];
   traceMark: TraceMark | null;
   diagnostics: EditorDiagnostic[];
   /** move the cursor to and scroll to this line; `n` changes on every request */
   reveal?: { line: number; n: number } | null;
+  /** Trace Peek: hover / keyboard / touch inspection of variables at the selected step (null when nothing is traced) */
+  peek?: PeekProvider | null;
   onChange(value: string): void;
   onToggleBreakpoint(line: number): void;
   onBreakpointsMoved(lines: number[]): void;
-  onSelectionLines?(range: { from: number; to: number } | null): void;
-  onRequestEdit?(): void;
 }
 
 export function CodeEditor(props: EditorProps): React.JSX.Element {
@@ -286,7 +288,8 @@ export function CodeEditor(props: EditorProps): React.JSX.Element {
   const propsRef = useRef(props);
   propsRef.current = props;
   const langComp = useRef(new Compartment());
-  const roComp = useRef(new Compartment());
+  const liveRef = useRef<HTMLDivElement>(null);
+  const peekRef = useRef<ReturnType<typeof peekExtension> | null>(null);
 
   useEffect(() => {
     if (!host.current) return;
@@ -295,9 +298,18 @@ export function CodeEditor(props: EditorProps): React.JSX.Element {
       propsRef.current.onToggleBreakpoint(v.state.doc.lineAt(pos).number);
       return true;
     };
+    const peekExt = peekExtension({
+      provider: () => propsRef.current.peek,
+      language: () => propsRef.current.language,
+      announce: (text) => {
+        if (liveRef.current) liveRef.current.textContent = text;
+      },
+    });
+    peekRef.current = peekExt;
     const state = EditorState.create({
       doc: props.value,
       extensions: [
+        ...peekExt.extensions,
         breakpointField,
         traceField,
         errorLensField,
@@ -320,7 +332,6 @@ export function CodeEditor(props: EditorProps): React.JSX.Element {
         syntaxHighlighting(highlight),
         baseTheme,
         langComp.current.of(langExt(props.language)),
-        roComp.current.of([EditorState.readOnly.of(props.readOnly), EditorView.editable.of(!props.readOnly)]),
         keymap.of([
           { key: "F9", run: (v) => toggleAt(v, v.state.selection.main.head) },
           indentWithTab,
@@ -335,22 +346,6 @@ export function CodeEditor(props: EditorProps): React.JSX.Element {
             const prev = propsRef.current.breakpoints;
             if (lines.length !== prev.length || lines.some((l, i) => l !== prev[i])) propsRef.current.onBreakpointsMoved(lines.sort((a, b) => a - b));
           }
-          if (u.selectionSet && propsRef.current.onSelectionLines) {
-            const sel = u.state.selection.main;
-            if (sel.empty) propsRef.current.onSelectionLines(null);
-            else {
-              const from = u.state.doc.lineAt(sel.from).number;
-              const toLine = u.state.doc.lineAt(sel.to);
-              const to = sel.to === toLine.from && toLine.number > from ? toLine.number - 1 : toLine.number;
-              propsRef.current.onSelectionLines({ from, to });
-            }
-          }
-        }),
-        EditorView.domEventHandlers({
-          mousedown: (_e, v) => {
-            if (v.state.readOnly) propsRef.current.onRequestEdit?.();
-            return false;
-          },
         }),
       ],
     });
@@ -375,12 +370,6 @@ export function CodeEditor(props: EditorProps): React.JSX.Element {
   useEffect(() => {
     view.current?.dispatch({ effects: langComp.current.reconfigure(props.language === "python" ? python() : javascript()) });
   }, [props.language]);
-
-  useEffect(() => {
-    view.current?.dispatch({
-      effects: roComp.current.reconfigure([EditorState.readOnly.of(props.readOnly), EditorView.editable.of(!props.readOnly)]),
-    });
-  }, [props.readOnly]);
 
   useEffect(() => {
     const v = view.current;
@@ -425,8 +414,19 @@ export function CodeEditor(props: EditorProps): React.JSX.Element {
     if (!v || !line) return;
     const indent = /^\s*/.exec(line.text)?.[0].length ?? 0;
     v.dispatch({ selection: { anchor: line.from + indent }, effects: EditorView.scrollIntoView(line.from, { y: "center" }) });
-    if (!v.state.readOnly) v.focus();
+    v.focus();
   }, [props.reveal]);
 
-  return <div ref={host} className="editor-host" data-testid="editor" />;
+  // open peeks are rebuilt when the displayed step changes, so they can never show another step's values
+  useEffect(() => {
+    const v = view.current;
+    if (v && peekRef.current) peekRef.current.refresh(v);
+  }, [props.peek?.epoch]);
+
+  return (
+    <>
+      <div ref={host} className="editor-host" data-testid="editor" />
+      <div ref={liveRef} className="sr-only" aria-live="polite" data-testid="peek-live" />
+    </>
+  );
 }

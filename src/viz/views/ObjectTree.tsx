@@ -26,7 +26,7 @@ export function ObjectTree({ v, label, depth = 0, path = new Set<string>() }: { 
     return (
       <div className="otree-row">
         {label !== undefined && <span className="otree-key">{label}: </span>}
-        <span className="dim">#{v.id} (not in snapshot)</span>
+        <span className="dim">(not captured)</span>
       </div>
     );
   const cyclic = path.has(v.id);
@@ -34,7 +34,6 @@ export function ObjectTree({ v, label, depth = 0, path = new Set<string>() }: { 
     <>
       {label !== undefined && <span className="otree-key">{label}: </span>}
       <span className="otree-type">{summarizeObject(o, ctx.language)}</span>
-      <span className="ref-id">#{v.id.replace(/^o/, "")}</span>
       {shared && <span className="alias-mark" title="This object is referenced from more than one place">⧉</span>}
       {ch?.isNew && <span className="badge badge-new inline">+</span>}
       {ch && !ch.isNew && <span className="badge badge-changed inline">Δ</span>}
@@ -65,9 +64,7 @@ export function ObjectTree({ v, label, depth = 0, path = new Set<string>() }: { 
         ) : (
           <span className="disclosure-spacer" />
         )}
-        <button type="button" className="otree-head" onClick={() => ctx.onInspect(v.id)}>
-          {header}
-        </button>
+        <span className="otree-head">{header}</span>
         {(o.kind === "function" || o.kind === "class" || o.kind === "other") && <span className="dim"> {o.repr}</span>}
       </div>
       {open && expandable && (

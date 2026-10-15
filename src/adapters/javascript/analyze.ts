@@ -148,13 +148,27 @@ export function analyzeJavaScript(source: string): SourceAnalysis {
   const entryCandidates = sol
     ? functions.filter((f) => f.className === "Solution" && !f.name.startsWith("_")).map((f) => f.qualname)
     : functions.filter((f) => !f.className && !f.qualname.startsWith("<nested>") && !["ListNode", "TreeNode"].includes(f.name)).map((f) => f.qualname);
-  const topLevelCode = ast.body.some(
-    (s) =>
-      s.type !== "FunctionDeclaration" &&
-      s.type !== "ClassDeclaration" &&
-      !(s.type === "VariableDeclaration" && s.declarations.every((d) => d.init && (d.init.type === "FunctionExpression" || d.init.type === "ArrowFunctionExpression"))) &&
-      !(s.type === "ExpressionStatement" && s.expression.type === "Literal"),
-  );
+  // "driver" code: top-level statements that call into the program (its own functions or classes, console, prompt)
+  const own = new Set(functions.filter((f) => !f.className).map((f) => f.name).concat(classes.map((c) => c.name)));
+  const callsProgram = (node: unknown): boolean => {
+    let hit = false;
+    walk(node, (n) => {
+      if (hit || (n.type !== "CallExpression" && n.type !== "NewExpression")) return;
+      const c = n.callee;
+      if (c.type === "Identifier" && (own.has(c.name) || c.name === "prompt")) hit = true;
+      else if (c.type === "MemberExpression" && c.object.type === "Identifier" && (own.has(c.object.name) || c.object.name === "console")) hit = true;
+    });
+    return hit;
+  };
+  const isDefinition = (s: E.Statement | E.ModuleDeclaration | E.Directive): boolean =>
+    s.type === "FunctionDeclaration" ||
+    s.type === "ClassDeclaration" ||
+    (s.type === "VariableDeclaration" && s.declarations.every((d) => d.init && (d.init.type === "FunctionExpression" || d.init.type === "ArrowFunctionExpression")));
+  const driver = ast.body.some((s) => !isDefinition(s) && callsProgram(s));
+  let usesInput = false;
+  walk(ast, (n) => {
+    if (n.type === "CallExpression" && n.callee.type === "Identifier" && n.callee.name === "prompt") usesInput = true;
+  });
   return {
     ok: true,
     diagnostics: [],
@@ -164,6 +178,7 @@ export function analyzeJavaScript(source: string): SourceAnalysis {
     heapBases: [],
     sizeNames: [...sizeNames].sort(),
     entryCandidates,
-    scriptLike: entryCandidates.length === 0 || (topLevelCode && !sol),
+    driver,
+    usesInput,
   };
 }

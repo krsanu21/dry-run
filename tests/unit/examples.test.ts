@@ -5,7 +5,7 @@ import type { TraceEvent, Value } from "../../src/trace/schema";
 import type { Trace } from "../../src/trace/store";
 import { validateTrace } from "../../src/trace/validate";
 import { toPlain } from "../../src/trace/values";
-import { local, top, traceLang, type Traced } from "../helpers";
+import { exampleRequest, local, top, traceLang, type Traced } from "../helpers";
 
 /**
  * Every built-in example runs through its real adapter. Assertions cover
@@ -14,16 +14,7 @@ import { local, top, traceLang, type Traced } from "../helpers";
 
 async function runExample(id: string, testIndex = 0): Promise<Traced & { ex: Example }> {
   const ex = exampleById(id) as Example;
-  const t = ex.tests[testIndex];
-  const r = await traceLang(ex.language, {
-    source: ex.source,
-    mode: ex.mode,
-    entry: ex.entry,
-    args: t?.args,
-    argConversions: t?.conversions,
-    stdin: t?.stdin,
-    ...(ex.fragment ? { fragment: { initialState: ex.fragment.initialState, setup: ex.fragment.setup, startLine: ex.fragment.startLine } } : {}),
-  });
+  const r = await traceLang(ex.language, exampleRequest(ex, testIndex));
   return { ...r, ex };
 }
 
@@ -56,7 +47,7 @@ describe("all examples: final results and trace invariants", () => {
   for (const ex of EXAMPLES) {
     for (let ti = 0; ti < Math.max(1, ex.tests.length); ti++) {
       const test = ex.tests[ti];
-      it(`${ex.id}${test ? ` — ${test.name}` : ""}`, async () => {
+      it(`${ex.id}${test ? ` — case ${ti + 1}` : ""}`, async () => {
         const { trace, summary } = await runExample(ex.id, ti);
         expect(validateTrace(trace, ex.source.split("\n").length)).toEqual([]);
         expect(trace.finished).toBe(true);
@@ -240,12 +231,6 @@ describe("example intermediate states", () => {
     expect(trace.maxDepth).toBe(5);
   });
 
-  it("Fragment example: runs only the selected lines with the provided state", async () => {
-    const { trace, summary } = await runExample("fragment-dp-transition");
-    expect(summary.status).toBe("completed");
-    const ret = trace.events.find((e) => e.type === "return") as TraceEvent;
-    expect(plain(ret, "dp")).toEqual([0, 2, 7, 11, 11, 12]);
-  });
 
   it("Generator script: yields and output", async () => {
     const { trace } = await runExample("generator-script");

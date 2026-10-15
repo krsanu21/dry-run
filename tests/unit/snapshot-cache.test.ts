@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EXAMPLES } from "../../src/examples";
 import type { TraceEvent } from "../../src/trace/schema";
-import { tracePython, type Req } from "../helpers";
+import { exampleRequest, tracePython, type Req } from "../helpers";
 
 /**
  * The Python tracer skips re-encoding containers and frames whose contents are
@@ -82,16 +82,7 @@ describe("Python tracer caches match full re-encoding", () => {
 
   for (const ex of EXAMPLES.filter((e) => e.language === "python"))
     it(`example: ${ex.id}`, async () => {
-      const t = ex.tests[0];
-      const n = await expectSameAsUncached({
-        source: ex.source,
-        mode: ex.mode,
-        entry: ex.entry,
-        args: t?.args,
-        argConversions: t?.conversions,
-        stdin: t?.stdin,
-        ...(ex.fragment ? { fragment: { initialState: ex.fragment.initialState, setup: ex.fragment.setup, startLine: ex.fragment.startLine } } : {}),
-      });
+      const n = await expectSameAsUncached(exampleRequest(ex));
       expect(n).toBeGreaterThan(0);
     });
 });

@@ -1,7 +1,7 @@
 import { parse, type Options as AcornOptions } from "acorn";
 import { generate } from "astring";
 import type * as E from "estree";
-import type { Diagnostic, RunMode } from "../../trace/schema";
+import type { Diagnostic } from "../../trace/schema";
 
 /**
  * AST-based instrumentation for the JavaScript adapter.
@@ -29,15 +29,6 @@ import type { Diagnostic, RunMode } from "../../trace/schema";
 export const RESERVED_PREFIX = "__dr";
 const FRAME = "__dr_f";
 const RT = "__dr";
-const FRAGMENT_FN = "__dr_fragment";
-
-export interface InstrumentOptions {
-  mode: RunMode;
-  /** fragment mode: initial-state variable names, become parameters */
-  fragmentParams?: string[];
-  /** fragment mode: editor line of the first fragment line */
-  startLine?: number;
-}
 
 export interface InstrumentResult {
   ok: boolean;
@@ -162,12 +153,11 @@ function cleanAcornMessage(msg: string): string {
   return msg.replace(/\s*\(\d+:\d+\)$/, "");
 }
 
-export function parseJs(source: string, allowReturn = false): { ast: E.Program } | { error: Diagnostic } {
+export function parseJs(source: string): { ast: E.Program } | { error: Diagnostic } {
   const opts: AcornOptions = {
     ecmaVersion: "latest",
     sourceType: "script",
     locations: true,
-    allowReturnOutsideFunction: allowReturn,
     allowHashBang: true,
   };
   try {
@@ -245,7 +235,7 @@ class Instrumenter {
     for (const s of [...localScopes, ...closureScopes]) for (const n of s.names) if (!owner.has(n)) owner.set(n, s);
     const ordered = (scopes: Scope[]): string[] => {
       const out: string[] = [];
-      for (const s of [...scopes].reverse()) for (const n of s.names) if (owner.get(n) === s && (!n.startsWith(RESERVED_PREFIX) || n === FRAGMENT_FN) && !out.includes(n)) out.push(n);
+      for (const s of [...scopes].reverse()) for (const n of s.names) if (owner.get(n) === s && !n.startsWith(RESERVED_PREFIX) && !out.includes(n)) out.push(n);
       return out;
     };
     const local = ordered(localScopes);
@@ -336,7 +326,7 @@ class Instrumenter {
       case "BlockStatement":
         return this.blockStmt(s);
       case "FunctionDeclaration":
-        return this.fn(s, s.id?.name === FRAGMENT_FN ? "<fragment>" : s.id?.name ?? "<anonymous>", false) as E.FunctionDeclaration;
+        return this.fn(s, s.id?.name ?? "<anonymous>", false) as E.FunctionDeclaration;
       case "ReturnStatement":
         return {
           ...s,
@@ -644,32 +634,13 @@ function needsStatementHook(s: E.Statement): boolean {
   }
 }
 
-export function instrument(source: string, opts: InstrumentOptions): InstrumentResult {
+export function instrument(source: string): InstrumentResult {
   const diagnostics: Diagnostic[] = [];
-  const isFragment = opts.mode === "fragment";
-  const startLine = opts.startLine ?? 1;
-  const parsed = parseJs(isFragment ? "\n".repeat(startLine - 1) + source : source, isFragment);
+  const parsed = parseJs(source);
   if ("error" in parsed) return { ok: false, code: "", diagnostics: [parsed.error], topLevelNames: [] };
-  let ast = parsed.ast;
+  const ast = parsed.ast;
   checkConstructs(ast, diagnostics);
   if (diagnostics.some((d) => d.severity === "error")) return { ok: false, code: "", diagnostics, topLevelNames: [] };
-
-  if (isFragment) {
-    for (const p of opts.fragmentParams ?? []) {
-      if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(p))
-        return { ok: false, code: "", diagnostics: [{ severity: "error", kind: "InitialStateError", line: 1, message: `"${p}" is not a valid JavaScript variable name` }], topLevelNames: [] };
-    }
-    const fnDecl: E.FunctionDeclaration = {
-      type: "FunctionDeclaration",
-      id: id(FRAGMENT_FN),
-      params: (opts.fragmentParams ?? []).map(id),
-      body: block(ast.body as E.Statement[]),
-      generator: false,
-      async: false,
-      loc: { start: { line: startLine, column: 0 }, end: (ast as AnyNode).loc?.end ?? { line: startLine, column: 0 } },
-    } as E.FunctionDeclaration;
-    ast = { ...ast, body: [fnDecl] };
-  }
 
   const topNames = [...new Set([...hoistedVars(ast), ...lexicalNames(ast.body)])];
   const ins = new Instrumenter(0);

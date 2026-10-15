@@ -47,7 +47,7 @@ export function GridView({ panel }: { panel: VizPanel }): React.JSX.Element {
   const cols = Math.max(0, ...rowObjs.map((r) => r?.items.length ?? 0));
   const outerChange = changeOf(ctx, panel.rootId);
   const allNums = rowObjs.flatMap((r) => (r?.items ?? []).map((v) => numberOf(v)));
-  const numeric = ctx.heatmap && allNums.length > 1 && allNums.every((n) => n !== undefined) && panel.recurrence;
+  const numeric = allNums.length > 1 && allNums.every((n) => n !== undefined) && panel.recurrence;
   const nums = allNums as number[];
   const min = numeric ? Math.min(...nums) : 0;
   const max = numeric ? Math.max(...nums) : 0;
@@ -110,7 +110,7 @@ export function GridView({ panel }: { panel: VizPanel }): React.JSX.Element {
                 <th key={c} scope="col" className={colPtrs(c).length ? "hdr-ptr" : ""}>
                   <div className="hdr-ptrs">
                     {colPtrs(c).map((x) => (
-                      <span key={x.name} className="ptr-chip" data-testid={`colptr-${x.name}`}>
+                      <span key={x.name} className={`ptr-chip${ctx.peek?.name === x.name ? " is-peeked" : ""}`} data-testid={`colptr-${x.name}`}>
                         {x.name}
                       </span>
                     ))}
@@ -132,7 +132,7 @@ export function GridView({ panel }: { panel: VizPanel }): React.JSX.Element {
                   <th scope="row" className={rowPtrs(r).length ? "hdr-ptr" : ""}>
                     <span className="hdr-ptrs-row">
                       {rowPtrs(r).map((x) => (
-                        <span key={x.name} className="ptr-chip" data-testid={`rowptr-${x.name}`}>
+                        <span key={x.name} className={`ptr-chip${ctx.peek?.name === x.name ? " is-peeked" : ""}`} data-testid={`rowptr-${x.name}`}>
                           {x.name}
                         </span>
                       ))}
@@ -153,6 +153,7 @@ export function GridView({ panel }: { panel: VizPanel }): React.JSX.Element {
                       "gcell",
                       `st-${st}`,
                       act ? "is-active" : "",
+                      act && (act.rowName === ctx.peek?.name || act.colName === ctx.peek?.name) ? "is-peeked-cell" : "",
                       refs.some((x) => x.role === "read") ? "is-read" : "",
                       refs.some((x) => x.role === "write") ? "is-write" : "",
                       ...ovs.map((o) => `has-${o.style}`),

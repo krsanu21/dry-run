@@ -55,12 +55,12 @@ describe("JS instrumentation preserves semantics", () => {
   }
 
   it("rejects reserved identifiers and modules with diagnostics", () => {
-    expect(instrument("let __dr_x = 1;", { mode: "script" }).diagnostics[0]?.kind).toBe("ReservedName");
-    expect(instrument("with (o) {}", { mode: "script" }).ok).toBe(false);
+    expect(instrument("let __dr_x = 1;").diagnostics[0]?.kind).toBe("ReservedName");
+    expect(instrument("with (o) {}").ok).toBe(false);
   });
 
   it("warns (does not fail) for async functions", () => {
-    const r = instrument("async function f() { await 1; }", { mode: "script" });
+    const r = instrument("async function f() { await 1; }");
     expect(r.ok).toBe(true);
     expect(r.diagnostics.some((d) => d.severity === "warning")).toBe(true);
   });
@@ -202,18 +202,6 @@ describe("JS tracer: events and state", () => {
     expect(summary.resultJson).toBe("[3,2,1]");
   });
 
-  it("fragment mode runs a snippet with initial state at editor line numbers", () => {
-    const { trace, summary } = traceJs({
-      source: "for (let i = 2; i < dp.length; i++) {\n  dp[i] = dp[i - 1] + dp[i - 2];\n}\n",
-      mode: "fragment",
-      fragment: { initialState: '{"dp": [1, 1, 0, 0]}', setup: "", startLine: 7 },
-    });
-    expect(summary.status).toBe("completed");
-    expect(new Set(trace.events.filter((e) => e.type === "line").map((e) => e.loc.line))).toEqual(new Set([7, 8]));
-    const ret = trace.events.find((e) => e.type === "return") as TraceEvent;
-    expect(top(ret).name).toBe("<fragment>");
-    expect(show(ret, "dp", "javascript")).toBe("[1, 1, 2, 3]");
-  });
 
   it("runs are isolated (fresh program scope each run)", () => {
     traceJs({ source: "var leak = 1;\n" });

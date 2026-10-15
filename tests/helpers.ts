@@ -1,5 +1,6 @@
 import { loadPyodide } from "pyodide";
 import { runJavaScript } from "../src/adapters/javascript/runtime";
+import type { Example } from "../src/examples";
 import { type PyodideLike, PythonRuntime } from "../src/adapters/python/runtime";
 import type { RunOutcome } from "../src/adapters/types";
 import { DEFAULT_LIMITS, type ExecutionRequest, type Language, type TraceFrame, type TraceEvent, type Value, type WireEvent } from "../src/trace/schema";
@@ -15,6 +16,11 @@ export function pythonRuntime(): Promise<PythonRuntime> {
 }
 
 export type Req = Partial<ExecutionRequest> & { source: string };
+
+/** The request the app makes for a built-in example's n-th test case. */
+export function exampleRequest(ex: Example, testIndex = 0): Req {
+  return { source: ex.source, mode: ex.entry ? "function" : "script", entry: ex.entry, args: ex.tests[testIndex]?.args, argConversions: ex.conversions };
+}
 
 function fullRequest(language: Language, r: Req): ExecutionRequest {
   return { language, mode: "script", ...r, limits: { ...DEFAULT_LIMITS, ...(r.limits ?? {}) } };

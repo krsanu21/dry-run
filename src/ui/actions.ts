@@ -3,6 +3,7 @@ import { JavaScriptAdapter } from "../adapters/javascript/adapter";
 import { PythonAdapter } from "../adapters/python/adapter";
 import type { LanguageAdapter, RunHandle } from "../adapters/types";
 import { exampleById } from "../examples";
+import { examplesInSource, parseExamples } from "../trace/examples";
 import { parseLiteral } from "../trace/literal";
 import type { ArgConversion, ExecutionRequest, Language, TraceEvent, Value } from "../trace/schema";
 import { Trace, isTerminal } from "../trace/store";
@@ -17,6 +18,7 @@ import {
   type TestCase,
   toast,
   uid,
+  WHOLE_FILE,
   type Workspace,
   workspaceFromExample,
 } from "./store";
@@ -33,11 +35,6 @@ export function getAdapters(): Record<Language, LanguageAdapter> {
     adapters = { python, javascript: new JavaScriptAdapter() };
   }
   return adapters;
-}
-
-/** For tests: inject fake adapters. */
-export function setAdapters(a: Record<Language, LanguageAdapter>): void {
-  adapters = a;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,28 +79,33 @@ function humanize(qualname: string): string {
  */
 function reconcileTests(analysis: SourceAnalysis): void {
   const { ws } = store.get();
-  if (!analysis.ok || ws.mode !== "function") return;
-  const entry = resolvedEntry(analysis);
-  const fn = entry ? entryFunction(analysis, entry) : undefined;
+  if (!analysis.ok) return;
+  // an override that no longer exists in the code goes back to automatic
+  if (ws.target && ws.target !== WHOLE_FILE && !analysis.functions.some((f) => f.qualname === ws.target)) store.updateWs({ target: "" });
+  const t = runTarget(store.get().ws, analysis);
+  const fn = t.kind === "function" ? t.fn : undefined;
   if (!fn) return;
   const sig = signature(fn);
-  if (!ws.testsFor) {
+  // the cases came with an example whose code was replaced before it was ever analysed: they belong to that example
+  const replacedExample = !ws.testsFor && !!ws.exampleId && exampleById(ws.exampleId)?.source !== ws.source;
+  if (!ws.testsFor && !replacedExample) {
     store.updateWs({ testsFor: sig });
     return;
   }
   if (ws.testsFor === sig) return;
-  const oldName = ws.testsFor.slice(0, ws.testsFor.indexOf("("));
-  const oldParams = ws.testsFor.slice(ws.testsFor.indexOf("(") + 1, -1);
-  const stillThere = analysis.functions.some((f) => f.qualname === oldName);
-  const sameParams = oldParams === fn.params.map((p) => p.name).join(", ");
+  const old = ws.testsFor ?? "";
+  const oldName = old.slice(0, old.indexOf("("));
+  const oldParams = old.slice(old.indexOf("(") + 1, -1);
+  const stillThere = !replacedExample && analysis.functions.some((f) => f.qualname === oldName);
+  const sameParams = !replacedExample && oldParams === fn.params.map((p) => p.name).join(", ");
   const retitle = ws.exampleId || ws.title === "Untitled" ? { title: humanize(fn.qualname), exampleId: undefined } : {};
   if (stillThere || sameParams) {
     // another function was added, or this one was renamed / its parameters edited: keep the tests
     store.updateWs({ testsFor: sig, ...(stillThere ? {} : retitle) });
     return;
   }
-  const t = newTest("Case 1", fn.params.map(() => ""));
-  store.updateWs({ testsFor: sig, entry: fn.qualname, tests: [t], activeTestId: t.id, ...retitle });
+  const fresh = newTest(fn.params.map(() => ""));
+  store.updateWs({ testsFor: sig, tests: [fresh], activeTestId: fresh.id, conversions: [], ...retitle });
   store.set({ results: {} });
   toast(`New function ${fn.qualname.split(".").pop()}(${fn.params.map((p) => p.name).join(", ")}) — started a fresh test case.`);
 }
@@ -125,10 +127,8 @@ export function loadExample(id: string): void {
     run: { status: "idle", trace: null, version: 0, outcome: null, request: null, testId: null, sourceAtRun: "", phase: "" },
     results: {},
     cursor: 0,
-    editing: true,
     overrides: {},
     pointerOverrides: {},
-    historyVar: null,
     dialog: null,
     analysis: null,
     analysisFor: "",
@@ -144,12 +144,10 @@ export function loadWorkspace(ws: Workspace): void {
     run: { status: "idle", trace: null, version: 0, outcome: null, request: null, testId: null, sourceAtRun: "", phase: "" },
     results: {},
     cursor: 0,
-    editing: true,
     analysis: null,
     analysisFor: "",
     overrides: {},
     pointerOverrides: {},
-    historyVar: null,
     dialog: null,
   });
   scheduleAnalysis(0);
@@ -164,9 +162,6 @@ export function clearTrace(): void {
     cursor: 0,
     selectedFrameId: null,
     playing: false,
-    editing: true,
-    historyVar: null,
-    inspectId: null,
     prediction: { ...store.get().prediction, from: null, fields: [], outcome: null },
   });
 }
@@ -176,18 +171,18 @@ export function newSolution(language: Language): void {
     language === "python"
       ? "class Solution:\n    def solve(self, nums):\n        # write your code here\n        pass\n"
       : "function solve(nums) {\n  // write your code here\n}\n";
-  const t = newTest("Case 1", ["[1, 2, 3]"]);
+  const t = newTest(["[1, 2, 3]"]);
   loadWorkspace({
     id: uid(),
     title: "Untitled",
     language,
     source,
-    mode: "function",
-    entry: "",
+    target: "",
     tests: [t],
     activeTestId: t.id,
+    conversions: [],
+    stdin: "",
     breakpoints: [],
-    fragment: { initialState: "{}", setup: "", startLine: 1, endLine: 1 },
     updatedAt: Date.now(),
   });
 }
@@ -197,28 +192,79 @@ export function setLanguage(language: Language): void {
   newSolution(language);
 }
 
+/** "" = decided from the code, WHOLE_FILE, or a function's qualname. */
+export function setTarget(target: string): void {
+  store.updateWs({ target });
+}
+
 export function updateTest(id: string, patch: Partial<TestCase>): void {
   store.updateWs((w) => ({ tests: w.tests.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
 }
 
-export function addTest(): void {
-  const s = store.get();
-  const base = activeTest(s);
-  const t = newTest(`Case ${s.ws.tests.length + 1}`, [...base.args], { conversions: [...base.conversions] });
-  store.updateWs((w) => ({ tests: [...w.tests, t], activeTestId: t.id }));
+export function addTest(args: string[] = [], expected = ""): TestCase {
+  const t = newTest(args, expected);
+  store.updateWs((w) => {
+    // an untouched empty row is replaced rather than kept above the new one
+    const keep = w.tests.filter((x) => x.args.some((a) => a.trim()) || x.expected.trim());
+    return { tests: [...keep, t], activeTestId: t.id };
+  });
+  return t;
+}
+
+export function duplicateTest(id: string): void {
+  const src = store.get().ws.tests.find((t) => t.id === id);
+  if (!src) return;
+  const t = newTest([...src.args], src.expected);
+  store.updateWs((w) => {
+    const i = w.tests.findIndex((x) => x.id === id);
+    return { tests: [...w.tests.slice(0, i + 1), t, ...w.tests.slice(i + 1)], activeTestId: t.id };
+  });
 }
 
 export function removeTest(id: string): void {
-  store.updateWs((w) => {
-    if (w.tests.length <= 1) return {};
-    const tests = w.tests.filter((t) => t.id !== id);
-    return { tests, activeTestId: w.activeTestId === id ? (tests[0] as TestCase).id : w.activeTestId };
-  });
+  const { ws, results } = store.get();
+  const i = ws.tests.findIndex((t) => t.id === id);
+  if (i < 0) return;
+  const removed = ws.tests[i] as TestCase;
+  const result = results[id];
+  // deleting the last case leaves one empty row
+  const placeholder = ws.tests.length === 1 ? newTest() : null;
+  const tests = placeholder ? [placeholder] : ws.tests.filter((t) => t.id !== id);
+  store.updateWs({ tests, activeTestId: ws.activeTestId === id ? (tests[Math.min(i, tests.length - 1)] as TestCase).id : ws.activeTestId });
   store.set((s) => {
-    const results = { ...s.results };
-    delete results[id];
-    return { results };
+    const next = { ...s.results };
+    delete next[id];
+    return { results: next };
   });
+  toast(`Deleted case ${i + 1}.`, "info", {
+    label: "Undo",
+    run: () => {
+      store.updateWs((w) => {
+        const back = w.tests.filter((t) => t.id !== placeholder?.id);
+        back.splice(Math.min(i, back.length), 0, removed);
+        return { tests: back, activeTestId: removed.id };
+      });
+      if (result) store.set((s) => ({ results: { ...s.results, [id]: result } }));
+      store.set({ toast: null });
+    },
+  });
+}
+
+/** Adds the cases found in pasted LeetCode text. Returns what could not be used. */
+export function addCasesFromText(text: string): string[] {
+  const t = runTarget(store.get().ws, store.get().analysis);
+  if (t.kind !== "function" || !t.fn) return ["Paste an example once the code has a function to call."];
+  const { cases, problems } = parseExamples(text, t.fn.params.map((p) => p.name));
+  for (const c of cases) addTest(c.args, c.expected);
+  return problems;
+}
+
+/** Examples written in the code (a pasted problem statement) that are not test cases yet. */
+export function examplesNotAdded(ws: Workspace, fn: FunctionInfo | undefined): Array<{ args: string[]; expected: string }> {
+  if (!fn) return [];
+  const norm = (a: string): string => (parseLiteral(a).ok ? (parseLiteral(a) as { json: string }).json : a.trim());
+  const have = new Set(ws.tests.map((t) => t.args.map(norm).join("\u0000")));
+  return examplesInSource(ws.source, fn.params.map((p) => p.name)).filter((c) => !have.has(c.args.map(norm).join("\u0000")));
 }
 
 /** Switches the active test case; shows its recorded trace if one exists. */
@@ -265,13 +311,25 @@ export function entryFunction(analysis: SourceAnalysis | null, entry: string): F
   return analysis?.functions.find((f) => f.qualname === entry);
 }
 
-export function resolvedEntry(analysisOverride?: SourceAnalysis): string {
-  const { ws } = store.get();
-  const analysis = analysisOverride ?? store.get().analysis;
-  if (ws.entry && analysis?.entryCandidates.includes(ws.entry)) return ws.entry;
-  // a successful analysis that found nothing callable means there is no entry point — never fall back to a stale one
-  if (analysis?.ok) return analysis.entryCandidates[0] ?? "";
-  return analysis?.entryCandidates[0] ?? ws.entry;
+export type RunTarget =
+  | { kind: "function"; entry: string; fn: FunctionInfo | undefined; auto: boolean }
+  | { kind: "file"; auto: boolean; /** a function that could be tested with inputs instead */ alt?: string }
+  | { kind: "unknown" };
+
+/**
+ * What Run runs. Without an explicit choice: the whole file when its top-level code calls into the
+ * program (or there is nothing to call), otherwise the LeetCode-looking function — the `Solution`
+ * method, else the last function defined.
+ */
+export function runTarget(ws: Workspace, analysis: SourceAnalysis | null): RunTarget {
+  if (ws.target === WHOLE_FILE) return { kind: "file", auto: false, ...(analysis?.entryCandidates.length ? { alt: analysis.entryCandidates[0] } : {}) };
+  if (!analysis) return { kind: "unknown" };
+  if (ws.target && analysis.functions.some((f) => f.qualname === ws.target)) return { kind: "function", entry: ws.target, fn: entryFunction(analysis, ws.target), auto: false };
+  const cands = analysis.entryCandidates;
+  if (analysis.driver || !cands.length) return { kind: "file", auto: true, ...(cands.length ? { alt: cands[cands.length - 1] as string } : {}) };
+  const inSolution = cands.some((c) => c.startsWith("Solution."));
+  const entry = (inSolution ? cands[0] : cands[cands.length - 1]) as string;
+  return { kind: "function", entry, fn: entryFunction(analysis, entry), auto: true };
 }
 
 /** Decides how each JSON argument is converted. `auto` uses type annotations, then conventional parameter names. */
@@ -289,9 +347,19 @@ export function autoConversion(fn: FunctionInfo | undefined, i: number, language
   return { conv: "raw", reason: "" };
 }
 
-export function effectiveConversion(test: TestCase, fn: FunctionInfo | undefined, i: number, language: Language): ArgConversion {
-  const c = test.conversions[i] ?? "auto";
+export function effectiveConversion(ws: Workspace, fn: FunctionInfo | undefined, i: number): ArgConversion {
+  const c = ws.conversions[i] ?? "auto";
+  const language = ws.language;
   return c === "auto" ? autoConversion(fn, i, language).conv : c;
+}
+
+export function setConversion(i: number, conv: ArgConversion): void {
+  store.updateWs((w) => {
+    const conversions = [...w.conversions];
+    while (conversions.length <= i) conversions.push("auto");
+    conversions[i] = conv;
+    return { conversions };
+  });
 }
 
 export function cancelRun(): void {
@@ -313,56 +381,42 @@ export async function run(testId?: string): Promise<void> {
   const test = ws.tests.find((t) => t.id === tid) ?? activeTest(s);
   if (!analysis.ok && analysis.diagnostics.some((d) => d.kind === "SyntaxError" || d.severity === "error")) {
     const d = analysis.diagnostics[0];
-    store.set((st) => ({ editing: true, revealError: st.revealError + 1 }));
+    store.set((st) => ({ revealError: st.revealError + 1 }));
     toast(d ? `Can't run yet — ${d.kind} on line ${d.line}: ${d.message}` : "Can't run yet — syntax error", "error");
     return;
   }
-  const request: ExecutionRequest = { language: ws.language, source: ws.source, mode: ws.mode, limits: s.prefs.limits };
-  if (ws.mode === "function") {
-    const entry = resolvedEntry(analysis);
-    if (!entry) {
-      toast("No function or class Solution found. Add one, or switch to Script mode to run top-level code.", "error");
-      return;
-    }
-    const fn = entryFunction(analysis, entry);
+  const target = runTarget(ws, analysis);
+  const request: ExecutionRequest = { language: ws.language, source: ws.source, mode: target.kind === "function" ? "function" : "script", limits: s.prefs.limits };
+  if (target.kind === "function") {
+    const fn = target.fn;
     const nParams = fn?.params.length ?? test.args.length;
     const args = Array.from({ length: nParams }, (_, i) => test.args[i] ?? "");
     const missing = args.findIndex((a) => !a.trim());
     if (missing >= 0) {
-      toast(`Provide a JSON value for parameter "${fn?.params[missing]?.name ?? missing + 1}".`, "error");
+      toast(`Give a value for ${fn?.params[missing]?.name ?? `argument ${missing + 1}`} in case ${ws.tests.indexOf(test) + 1}.`, "error");
       return;
     }
-    // Inputs may be JSON or Python/JS literals; the runtimes always receive strict JSON.
+    // inputs may be JSON or Python / JS literals; the runtimes always receive strict JSON
     const normalized: string[] = [];
     for (let i = 0; i < args.length; i++) {
       const parsed = parseLiteral(args[i] as string);
       if (!parsed.ok) {
-        toast(`Parameter "${fn?.params[i]?.name ?? i + 1}": ${parsed.error}`, "error");
+        toast(`${fn?.params[i]?.name ?? `Argument ${i + 1}`}: ${parsed.error}`, "error");
         return;
       }
       normalized.push(parsed.json);
     }
-    request.entry = entry;
+    request.entry = target.entry;
     request.args = normalized;
-    request.argConversions = args.map((_, i) => effectiveConversion(test, fn, i, ws.language));
-  } else if (ws.mode === "script") {
-    request.stdin = test.stdin;
-  } else {
-    const lines = ws.source.split("\n");
-    const start = Math.max(1, Math.min(ws.fragment.startLine, lines.length));
-    const end = Math.max(start, Math.min(ws.fragment.endLine || lines.length, lines.length));
-    request.source = lines.slice(start - 1, end).join("\n");
-    request.fragment = { initialState: ws.fragment.initialState, setup: ws.fragment.setup, startLine: start };
-  }
+    request.argConversions = args.map((_, i) => effectiveConversion(ws, fn, i));
+  } else request.stdin = ws.stdin;
 
-  const trace = new Trace({ language: ws.language, mode: ws.mode, source: ws.source, ...(request.entry ? { entry: request.entry } : {}) });
+  const trace = new Trace({ language: ws.language, mode: request.mode, source: ws.source, ...(request.entry ? { entry: request.entry } : {}) });
   store.set((st) => ({
     run: { status: "starting", trace, version: st.run.version + 1, outcome: null, request, testId: test.id, sourceAtRun: ws.source, phase: "Starting runtime…" },
     cursor: 0,
     selectedFrameId: null,
     playing: false,
-    editing: false,
-    historyVar: null,
     navNote: null,
     prediction: { ...st.prediction, from: null, fields: [], outcome: null },
     mobileTab: st.mobileTab === "code" ? "viz" : st.mobileTab,
@@ -385,7 +439,6 @@ export async function run(testId?: string): Promise<void> {
   store.set((st) => ({
     run: { ...st.run, status: "done", outcome, version: st.run.version + 1, phase: "" },
     cursor: nav.initialFocus(trace),
-    editing: syntax || trace.length === 0,
     results: { ...st.results, [test.id]: { testId: test.id, trace, outcome, request, sourceAtRun: ws.source } },
     prediction: st.prediction.enabled ? { ...st.prediction, from: nav.initialFocus(trace), fields: [], outcome: null } : st.prediction,
   }));

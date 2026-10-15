@@ -1,4 +1,4 @@
-import type { ArgConversion, Language, RunMode } from "../trace/schema";
+import type { ArgConversion, Language } from "../trace/schema";
 
 /**
  * Built-in learning examples. Every example is real source code executed by
@@ -7,11 +7,8 @@ import type { ArgConversion, Language, RunMode } from "../trace/schema";
  */
 
 export interface ExampleTest {
-  name: string;
   args: string[];
   expected?: string;
-  conversions?: ArgConversion[];
-  stdin?: string;
 }
 
 export interface Example {
@@ -22,11 +19,12 @@ export interface Example {
   stage: "complete" | "unfinished" | "buggy";
   /** One sentence: what to watch in the visualization. */
   watch: string;
-  mode: RunMode;
+  /** the function each test case calls; absent = the example runs as a whole file */
   entry?: string;
+  /** how each argument is built (linked list / tree), by position */
+  conversions?: ArgConversion[];
   source: string;
   tests: ExampleTest[];
-  fragment?: { initialState: string; setup: string; startLine: number; endLine: number };
 }
 
 const py = String.raw;
@@ -39,7 +37,6 @@ export const EXAMPLES: Example[] = [
     language: "python",
     stage: "complete",
     watch: "Watch `seen` fill up while `i` walks the array; the answer appears when a complement is already in the map.",
-    mode: "function",
     entry: "Solution.twoSum",
     source: py`from typing import List
 
@@ -54,9 +51,9 @@ class Solution:
         return []
 `,
     tests: [
-      { name: "Example 1", args: ["[2, 7, 11, 15]", "9"], expected: "[0, 1]" },
-      { name: "Example 2", args: ["[3, 2, 4]", "6"], expected: "[1, 2]" },
-      { name: "Duplicates", args: ["[3, 3]", "6"], expected: "[0, 1]" },
+      { args: ["[2, 7, 11, 15]", "9"], expected: "[0, 1]" },
+      { args: ["[3, 2, 4]", "6"], expected: "[1, 2]" },
+      { args: ["[3, 3]", "6"], expected: "[0, 1]" },
     ],
   },
   {
@@ -66,7 +63,6 @@ class Solution:
     language: "python",
     stage: "unfinished",
     watch: "The loop body is only half written and there is no return yet: the trace shows `seen` growing and the method returning None.",
-    mode: "function",
     entry: "Solution.twoSum",
     source: py`from typing import List
 
@@ -79,7 +75,7 @@ class Solution:
             seen[num] = i
         # TODO: return the answer
 `,
-    tests: [{ name: "Example 1", args: ["[2, 7, 11, 15]", "9"], expected: "[0, 1]" }],
+    tests: [{ args: ["[2, 7, 11, 15]", "9"], expected: "[0, 1]" }],
   },
   {
     id: "reverse-array",
@@ -88,7 +84,6 @@ class Solution:
     language: "python",
     stage: "complete",
     watch: "`l` and `r` move toward each other; each swap changes two cells of the same list.",
-    mode: "function",
     entry: "Solution.reverse",
     source: py`class Solution:
     def reverse(self, nums):
@@ -100,9 +95,9 @@ class Solution:
         return nums
 `,
     tests: [
-      { name: "Odd length", args: ["[1, 2, 3, 4, 5]"], expected: "[5, 4, 3, 2, 1]" },
-      { name: "Even length", args: ["[1, 2, 3, 4]"], expected: "[4, 3, 2, 1]" },
-      { name: "Empty", args: ["[]"], expected: "[]" },
+      { args: ["[1, 2, 3, 4, 5]"], expected: "[5, 4, 3, 2, 1]" },
+      { args: ["[1, 2, 3, 4]"], expected: "[4, 3, 2, 1]" },
+      { args: ["[]"], expected: "[]" },
     ],
   },
   {
@@ -112,7 +107,6 @@ class Solution:
     language: "python",
     stage: "buggy",
     watch: "Only `l` moves, so `r` keeps swapping into the same cell. Find the step where the result stops being a reversal.",
-    mode: "function",
     entry: "Solution.reverse",
     source: py`class Solution:
     def reverse(self, nums):
@@ -123,7 +117,7 @@ class Solution:
             # forgot to move r
         return nums
 `,
-    tests: [{ name: "Odd length", args: ["[1, 2, 3, 4, 5]"], expected: "[5, 4, 3, 2, 1]" }],
+    tests: [{ args: ["[1, 2, 3, 4, 5]"], expected: "[5, 4, 3, 2, 1]" }],
   },
   {
     id: "sliding-window",
@@ -132,7 +126,6 @@ class Solution:
     language: "python",
     stage: "complete",
     watch: "The window is `s[left..right]`; `last` remembers where each character was seen and `left` jumps past repeats.",
-    mode: "function",
     entry: "Solution.lengthOfLongestSubstring",
     source: py`class Solution:
     def lengthOfLongestSubstring(self, s: str) -> int:
@@ -148,9 +141,9 @@ class Solution:
         return best
 `,
     tests: [
-      { name: "abcabcbb", args: ['"abcabcbb"'], expected: "3" },
-      { name: "bbbbb", args: ['"bbbbb"'], expected: "1" },
-      { name: "pwwkew", args: ['"pwwkew"'], expected: "3" },
+      { args: ['"abcabcbb"'], expected: "3" },
+      { args: ['"bbbbb"'], expected: "1" },
+      { args: ['"pwwkew"'], expected: "3" },
     ],
   },
   {
@@ -160,7 +153,6 @@ class Solution:
     language: "python",
     stage: "complete",
     watch: "Cells enter the queue in distance order; `dist` fills in like a wave from the start cell.",
-    mode: "function",
     entry: "Solution.shortestPath",
     source: py`from collections import deque
 from typing import List
@@ -181,8 +173,8 @@ class Solution:
         return dist[rows - 1][cols - 1]
 `,
     tests: [
-      { name: "3x3 open", args: ["[[0,0,0],[1,1,0],[0,0,0]]"], expected: "4" },
-      { name: "Blocked", args: ["[[0,1],[1,0]]"], expected: "-1" },
+      { args: ["[[0,0,0],[1,1,0],[0,0,0]]"], expected: "4" },
+      { args: ["[[0,1],[1,0]]"], expected: "-1" },
     ],
   },
   {
@@ -192,7 +184,6 @@ class Solution:
     language: "python",
     stage: "complete",
     watch: "Each recursive `dfs` call is a stack frame; `visited` grows as the recursion explores one component at a time.",
-    mode: "function",
     entry: "Solution.countComponents",
     source: py`from typing import List
 
@@ -218,8 +209,8 @@ class Solution:
         return components
 `,
     tests: [
-      { name: "Two components", args: ["5", "[[0,1],[1,2],[3,4]]"], expected: "2" },
-      { name: "One component", args: ["4", "[[0,1],[1,2],[2,3]]"], expected: "1" },
+      { args: ["5", "[[0,1],[1,2],[3,4]]"], expected: "2" },
+      { args: ["4", "[[0,1],[1,2],[2,3]]"], expected: "1" },
     ],
   },
   {
@@ -229,7 +220,6 @@ class Solution:
     language: "python",
     stage: "complete",
     watch: "Each `dp[i]` is computed from `dp[i-1]` and `dp[i-2]` — the cells read by the current line are outlined.",
-    mode: "function",
     entry: "Solution.rob",
     source: py`from typing import List
 
@@ -244,8 +234,8 @@ class Solution:
         return dp[len(nums)]
 `,
     tests: [
-      { name: "Example 1", args: ["[1, 2, 3, 1]"], expected: "4" },
-      { name: "Example 2", args: ["[2, 7, 9, 3, 1]"], expected: "12" },
+      { args: ["[1, 2, 3, 1]"], expected: "4" },
+      { args: ["[2, 7, 9, 3, 1]"], expected: "12" },
     ],
   },
   {
@@ -255,7 +245,6 @@ class Solution:
     language: "python",
     stage: "unfinished",
     watch: "The base cases are set but the transition is a TODO, so the table never changes after `dp[1]`.",
-    mode: "function",
     entry: "Solution.rob",
     source: py`from typing import List
 
@@ -267,7 +256,7 @@ class Solution:
             pass  # TODO: dp[i] = ?
         return dp[len(nums)]
 `,
-    tests: [{ name: "Example 2", args: ["[2, 7, 9, 3, 1]"], expected: "12" }],
+    tests: [{ args: ["[2, 7, 9, 3, 1]"], expected: "12" }],
   },
   {
     id: "lcs",
@@ -276,7 +265,6 @@ class Solution:
     language: "python",
     stage: "complete",
     watch: "`dp[i][j]` depends on its top, left, and top-left neighbours; `i` and `j` also index into the two strings.",
-    mode: "function",
     entry: "Solution.longestCommonSubsequence",
     source: py`class Solution:
     def longestCommonSubsequence(self, text1: str, text2: str) -> int:
@@ -291,8 +279,8 @@ class Solution:
         return dp[m][n]
 `,
     tests: [
-      { name: "abcde / ace", args: ['"abcde"', '"ace"'], expected: "3" },
-      { name: "abc / def", args: ['"abc"', '"def"'], expected: "0" },
+      { args: ['"abcde"', '"ace"'], expected: "3" },
+      { args: ['"abc"', '"def"'], expected: "0" },
     ],
   },
   {
@@ -302,7 +290,6 @@ class Solution:
     language: "python",
     stage: "complete",
     watch: "`heap` is a min-heap of size k: see both its array and tree shape; the root is always the k-th largest so far.",
-    mode: "function",
     entry: "Solution.findKthLargest",
     source: py`import heapq
 from typing import List
@@ -317,8 +304,8 @@ class Solution:
         return heap[0]
 `,
     tests: [
-      { name: "Example 1", args: ["[3, 2, 1, 5, 6, 4]", "2"], expected: "5" },
-      { name: "Example 2", args: ["[3, 2, 3, 1, 2, 4, 5, 5, 6]", "4"], expected: "4" },
+      { args: ["[3, 2, 1, 5, 6, 4]", "2"], expected: "5" },
+      { args: ["[3, 2, 3, 1, 2, 4, 5, 5, 6]", "4"], expected: "4" },
     ],
   },
   {
@@ -328,7 +315,6 @@ class Solution:
     language: "python",
     stage: "complete",
     watch: "After sorting, each interval either extends the last merged interval or starts a new one.",
-    mode: "function",
     entry: "Solution.merge",
     source: py`from typing import List
 
@@ -344,8 +330,8 @@ class Solution:
         return merged
 `,
     tests: [
-      { name: "Example 1", args: ["[[1,3],[2,6],[8,10],[15,18]]"], expected: "[[1,6],[8,10],[15,18]]" },
-      { name: "Touching", args: ["[[1,4],[4,5]]"], expected: "[[1,5]]" },
+      { args: ["[[1,3],[2,6],[8,10],[15,18]]"], expected: "[[1,6],[8,10],[15,18]]" },
+      { args: ["[[1,4],[4,5]]"], expected: "[[1,5]]" },
     ],
   },
   {
@@ -355,8 +341,8 @@ class Solution:
     language: "python",
     stage: "complete",
     watch: "Each iteration flips one `.next` arrow; `prev`, `curr`, and `nxt` walk along the nodes.",
-    mode: "function",
     entry: "Solution.reverseList",
+    conversions: ["linked-list"],
     source: py`from typing import Optional
 
 # class ListNode:
@@ -376,8 +362,8 @@ class Solution:
         return prev
 `,
     tests: [
-      { name: "Five nodes", args: ["[1, 2, 3, 4, 5]"], expected: "[5, 4, 3, 2, 1]", conversions: ["linked-list"] },
-      { name: "Two nodes", args: ["[1, 2]"], expected: "[2, 1]", conversions: ["linked-list"] },
+      { args: ["[1, 2, 3, 4, 5]"], expected: "[5, 4, 3, 2, 1]" },
+      { args: ["[1, 2]"], expected: "[2, 1]" },
     ],
   },
   {
@@ -387,8 +373,8 @@ class Solution:
     language: "python",
     stage: "unfinished",
     watch: "`curr.next = prev` cuts the list before `curr` can advance — see where the remaining nodes become unreachable.",
-    mode: "function",
     entry: "Solution.reverseList",
+    conversions: ["linked-list"],
     source: py`from typing import Optional
 
 class Solution:
@@ -401,7 +387,7 @@ class Solution:
             curr = curr.next  # hmm, what is curr.next now?
         return prev
 `,
-    tests: [{ name: "Five nodes", args: ["[1, 2, 3, 4, 5]"], expected: "[5, 4, 3, 2, 1]", conversions: ["linked-list"] }],
+    tests: [{ args: ["[1, 2, 3, 4, 5]"], expected: "[5, 4, 3, 2, 1]" }],
   },
   {
     id: "inorder-traversal",
@@ -410,8 +396,8 @@ class Solution:
     language: "python",
     stage: "complete",
     watch: "The recursion path is highlighted in the tree; values are appended to `out` in left–root–right order.",
-    mode: "function",
     entry: "Solution.inorderTraversal",
+    conversions: ["binary-tree"],
     source: py`from typing import List, Optional
 
 class Solution:
@@ -429,32 +415,17 @@ class Solution:
         return out
 `,
     tests: [
-      { name: "Example", args: ["[4, 2, 6, 1, 3, 5, 7]"], expected: "[1, 2, 3, 4, 5, 6, 7]", conversions: ["binary-tree"] },
-      { name: "Skewed", args: ["[1, null, 2, null, 3]"], expected: "[1, 2, 3]", conversions: ["binary-tree"] },
+      { args: ["[4, 2, 6, 1, 3, 5, 7]"], expected: "[1, 2, 3, 4, 5, 6, 7]" },
+      { args: ["[1, null, 2, null, 3]"], expected: "[1, 2, 3]" },
     ],
   },
   {
-    id: "fragment-dp-transition",
-    title: "Fragment: one DP transition",
-    topic: "Fragment mode",
-    language: "python",
-    stage: "unfinished",
-    watch: "Only the selected lines run, inside a harness function whose parameters are the initial state you provide.",
-    mode: "fragment",
-    source: py`for i in range(2, len(nums) + 1):
-    dp[i] = max(dp[i - 1], dp[i - 2] + nums[i - 1])
-`,
-    tests: [],
-    fragment: { initialState: '{\n  "nums": [2, 7, 9, 3, 1],\n  "dp": [0, 2, 0, 0, 0, 0]\n}', setup: "", startLine: 1, endLine: 2 },
-  },
-  {
     id: "generator-script",
-    title: "Generators and output (script)",
-    topic: "Script mode",
+    title: "Generators and output (whole file)",
+    topic: "Whole-file programs",
     language: "python",
     stage: "complete",
     watch: "A generator frame suspends at `yield` and resumes with the same frame identity; printed output accumulates.",
-    mode: "script",
     source: py`def countdown(n):
     while n > 0:
         yield n
@@ -474,7 +445,6 @@ print("liftoff")
     language: "javascript",
     stage: "complete",
     watch: "The same trace schema drives the visualization for JavaScript: watch the Map fill and `i` advance.",
-    mode: "function",
     entry: "twoSum",
     source: `/**
  * @param {number[]} nums
@@ -492,8 +462,8 @@ var twoSum = function (nums, target) {
 };
 `,
     tests: [
-      { name: "Example 1", args: ["[2, 7, 11, 15]", "9"], expected: "[0, 1]" },
-      { name: "Example 2", args: ["[3, 2, 4]", "6"], expected: "[1, 2]" },
+      { args: ["[2, 7, 11, 15]", "9"], expected: "[0, 1]" },
+      { args: ["[3, 2, 4]", "6"], expected: "[1, 2]" },
     ],
   },
   {
@@ -503,8 +473,8 @@ var twoSum = function (nums, target) {
     language: "javascript",
     stage: "complete",
     watch: "Arrows flip one at a time; `prev` and `curr` are pointers into the same node objects.",
-    mode: "function",
     entry: "reverseList",
+    conversions: ["linked-list"],
     source: `/**
  * function ListNode(val, next) {
  *   this.val = (val === undefined ? 0 : val);
@@ -523,7 +493,7 @@ function reverseList(head) {
   return prev;
 }
 `,
-    tests: [{ name: "Five nodes", args: ["[1, 2, 3, 4, 5]"], expected: "[5, 4, 3, 2, 1]", conversions: ["linked-list"] }],
+    tests: [{ args: ["[1, 2, 3, 4, 5]"], expected: "[5, 4, 3, 2, 1]" }],
   },
   {
     id: "js-max-depth",
@@ -532,8 +502,8 @@ function reverseList(head) {
     language: "javascript",
     stage: "complete",
     watch: "Every recursive call gets its own frame and its own `root`; return values flow back up the stack.",
-    mode: "function",
     entry: "maxDepth",
+    conversions: ["binary-tree"],
     source: `function maxDepth(root) {
   if (root === null) return 0;
   const left = maxDepth(root.left);
@@ -541,7 +511,7 @@ function reverseList(head) {
   return Math.max(left, right) + 1;
 }
 `,
-    tests: [{ name: "Example", args: ["[3, 9, 20, null, null, 15, 7]"], expected: "3", conversions: ["binary-tree"] }],
+    tests: [{ args: ["[3, 9, 20, null, null, 15, 7]"], expected: "3" }],
   },
   {
     id: "js-sliding-window",
@@ -550,7 +520,6 @@ function reverseList(head) {
     language: "javascript",
     stage: "complete",
     watch: "`left` and `right` bound the window over `nums`; `sum` grows with `right` and shrinks with `left`.",
-    mode: "function",
     entry: "minSubArrayLen",
     source: `function minSubArrayLen(target, nums) {
   let left = 0;
@@ -567,7 +536,7 @@ function reverseList(head) {
   return best === Infinity ? 0 : best;
 }
 `,
-    tests: [{ name: "Example 1", args: ["7", "[2, 3, 1, 2, 4, 3]"], expected: "2" }],
+    tests: [{ args: ["7", "[2, 3, 1, 2, 4, 3]"], expected: "2" }],
   },
 ];
 

@@ -574,24 +574,6 @@ function buildTree(values: unknown, Ctor: NodeCtor): unknown {
   return root;
 }
 
-function convertSpecial(v: unknown, ctors: { ListNode: NodeCtor; TreeNode: NodeCtor }): unknown {
-  if (Array.isArray(v)) return v.map((e) => convertSpecial(e, ctors));
-  if (v && typeof v === "object") {
-    const entries = Object.entries(v as Record<string, unknown>);
-    if (entries.length === 1) {
-      const [k, inner] = entries[0] as [string, unknown];
-      const list = Array.isArray(inner) ? inner : [];
-      if (k === "$set") return new Set(list.map((e) => convertSpecial(e, ctors)));
-      if (k === "$map") return new Map(list.map((e) => (Array.isArray(e) ? [convertSpecial(e[0], ctors), convertSpecial(e[1], ctors)] : [e, undefined])));
-      if (k === "$tuple" || k === "$deque") return list.map((e) => convertSpecial(e, ctors));
-      if (k === "$linkedList") return buildLinkedList(inner, ctors.ListNode);
-      if (k === "$tree") return buildTree(inner, ctors.TreeNode);
-    }
-    return Object.fromEntries(entries.map(([k, e]) => [k, convertSpecial(e, ctors)]));
-  }
-  return v;
-}
-
 export function toJsonable(x: unknown, depth = 0, seen: Set<unknown> = new Set()): unknown {
   if (depth > 200) return "…";
   if (x === undefined) return null;
@@ -654,38 +636,12 @@ class HarnessError extends Error {}
 export function runJavaScript(request: ExecutionRequest, post: (json: string) => void, now: () => number = () => performance.now()): RunOutcome["summary"] {
   const t0 = now();
   const summary: RunOutcome["summary"] = { status: "completed", diagnostics: [], durationMs: 0 };
-  const fragmentInit: Record<string, unknown> = {};
-  if (request.mode === "fragment") {
-    try {
-      const parsed: unknown = JSON.parse(request.fragment?.initialState || "{}");
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Initial state must be a JSON object of variable names");
-      Object.assign(fragmentInit, parsed);
-    } catch (e) {
-      summary.status = "syntax-error";
-      summary.diagnostics.push({ severity: "error", kind: "InitialStateError", line: 1, message: `Initial state is not valid: ${(e as Error).message}` });
-      return summary;
-    }
-  }
-  const ins = instrument(request.source, {
-    mode: request.mode,
-    fragmentParams: Object.keys(fragmentInit),
-    startLine: request.fragment?.startLine ?? 1,
-  });
+  const ins = instrument(request.source);
   summary.diagnostics.push(...ins.diagnostics);
   if (!ins.ok) {
     summary.status = "syntax-error";
     return summary;
   }
-  const setup = request.mode === "fragment" ? request.fragment?.setup ?? "" : "";
-  if (setup.trim()) {
-    const p = parseJs(setup);
-    if ("error" in p) {
-      summary.status = "syntax-error";
-      summary.diagnostics.push({ ...p.error, message: `Setup code: ${p.error.message}`, line: 1 });
-      return summary;
-    }
-  }
-
   const tracer = new JsTracer(request.limits, post, now);
   tracer.showGlobals = request.mode !== "script";
   const consoleObj = {
@@ -711,7 +667,7 @@ export function runJavaScript(request: ExecutionRequest, post: (json: string) =>
   let program: (...args: unknown[]) => unknown;
   try {
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    program = new Function(...paramNames, `${setup}\n;${ins.code}`) as (...args: unknown[]) => unknown;
+    program = new Function(...paramNames, ins.code) as (...args: unknown[]) => unknown;
   } catch (e) {
     summary.status = "internal-error";
     summary.diagnostics.push({ severity: "error", kind: "InstrumentationError", line: 1, message: `Instrumented program failed to compile: ${(e as Error).message}` });
@@ -753,12 +709,7 @@ export function runJavaScript(request: ExecutionRequest, post: (json: string) =>
       let fn: (...a: unknown[]) => unknown;
       let thisArg: unknown;
       let args: unknown[];
-      if (request.mode === "fragment") {
-        fn = getGlobal("__dr_fragment") as (...a: unknown[]) => unknown;
-        const c = ctors();
-        args = Object.values(fragmentInit).map((v) => convertSpecial(v, c));
-        summary.harnessDescription = `Fragment executed as the body of a function whose parameters are the initial-state variables (${Object.keys(fragmentInit).join(", ") || "none"}). Setup code ran untraced first.`;
-      } else {
+      {
         const entry = request.entry ?? "";
         const [a, b] = entry.split(".");
         if (b) {
@@ -785,7 +736,6 @@ export function runJavaScript(request: ExecutionRequest, post: (json: string) =>
           return v;
         });
       }
-      if (typeof fn !== "function") throw new HarnessError("Fragment function was not created");
       tracer.start();
       runStart = now();
       const result = fn.apply(thisArg, args);

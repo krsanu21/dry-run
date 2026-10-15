@@ -90,7 +90,7 @@ export function ArrayView(p: ArrayViewProps): React.JSX.Element {
               {inRange.map((ptr) => (
                 <div
                   key={ptr.name}
-                  className={`ptr-label${ptr.manual || ptr.partnerOf ? " is-manual" : ""}`}
+                  className={`ptr-label${ptr.manual || ptr.partnerOf ? " is-manual" : ""}${ctx.peek?.name === ptr.name ? " is-peeked" : ""}`}
                   style={{
                     width: cellW,
                     transform: `translate(${ptr.index * step}px, ${(ptrRows - 1 - (stackPos.get(ptr.name) ?? 0)) * PTR_ROW}px)`,
@@ -122,7 +122,8 @@ export function ArrayView(p: ArrayViewProps): React.JSX.Element {
               const pointed = (perIndex.get(i) ?? 0) > 0;
               const prev = st === "changed" ? p.prevItems?.[i] : undefined;
               const hc = numeric ? heatColor(max === min ? 0.5 : ((nums[i] as number) - min) / (max - min)) : null;
-              const cls = ["cell", `st-${st}`, reads ? "is-read" : "", writes ? "is-write" : "", pointed ? "is-pointed" : ""].filter(Boolean).join(" ");
+              const peeked = !!ctx.peek && p.pointers.some((x) => !x.outOfRange && x.index === i && x.name === ctx.peek?.name);
+              const cls = ["cell", `st-${st}`, reads ? "is-read" : "", writes ? "is-write" : "", pointed ? "is-pointed" : "", peeked ? "is-peeked-cell" : ""].filter(Boolean).join(" ");
               return (
                 <div
                   key={i}

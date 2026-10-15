@@ -16,7 +16,6 @@ function createWorker(): Worker {
 export class PythonAdapter implements LanguageAdapter {
   readonly language = "python" as const;
   readonly displayName = "Python";
-  readonly modes = ["function", "script", "fragment"] as const;
 
   private spare: Worker | null = null;
   private spareReady = false;

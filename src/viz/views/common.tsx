@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 import type { EventDiff, ObjectChange } from "../../trace/diff";
+import type { PeekHighlight } from "../../trace/peek";
 import type { HeapObject, Language, TraceEvent, Value } from "../../trace/schema";
 import { formatPrimitive, formatValue, type Heap } from "../../trace/values";
 
@@ -12,9 +13,9 @@ export interface VizContextValue {
   refCounts: Map<string, number>;
   /** first-seen order of object ids across the whole trace (stable layouts) */
   firstSeen: Map<string, number>;
-  heatmap: boolean;
   reducedMotion: boolean;
-  onInspect(id: string): void;
+  /** the variable / object the Trace Peek tooltip is showing; views mark it */
+  peek?: PeekHighlight | null;
 }
 
 export const VizContext = createContext<VizContextValue | null>(null);
@@ -42,18 +43,10 @@ export function RefChip({ id, obj, label }: { id: string; obj: HeapObject | unde
   const ctx = useViz();
   const shared = (ctx.refCounts.get(id) ?? 0) > 1;
   return (
-    <button
-      type="button"
-      className={`ref-chip${shared ? " is-shared" : ""}`}
-      onClick={(e) => {
-        e.stopPropagation();
-        ctx.onInspect(id);
-      }}
-      title={`${obj?.typeName ?? "object"} #${id}${shared ? ` — referenced from ${ctx.refCounts.get(id)} places` : ""}. Click to inspect.`}
-    >
-      {label ?? (obj ? summarize(obj) : `#${id}`)}
-      <span className="ref-id">#{id.replace(/^o/, "")}</span>
-    </button>
+    <span className={`ref-chip${shared ? " is-shared" : ""}`} title={`${obj?.typeName ?? "object"}${shared ? ` — the same object is referenced from ${ctx.refCounts.get(id)} places` : ""}`}>
+      {label ?? (obj ? summarize(obj) : "object")}
+      {shared && <span className="alias-mark">⧉</span>}
+    </span>
   );
 }
 

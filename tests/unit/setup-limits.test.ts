@@ -115,17 +115,6 @@ describe("Python: top-level code before the traced call", () => {
     expect(r.summary.status).toBe("completed");
   });
 
-  it("fragment setup code obeys the limits too", async () => {
-    const r = await tracePython({
-      mode: "fragment",
-      source: "x = 1\n",
-      limits,
-      fragment: { initialState: "{}", setup: "while True:\n    pass\n", startLine: 1 },
-    });
-    expect(r.summary.status).toBe("limit");
-    expect(r.trace.last?.limit?.phase).toBe("setup");
-    expectDrawable(r);
-  });
 
   it("script mode is unchanged: the same loop is traced and stops at the event budget", async () => {
     const r = await tracePython({ mode: "script", limits, source: "i = 0\nwhile i < 10:\n    pass\n" });

@@ -44,7 +44,6 @@ export function showFixtureAt(name: string, pick: (t: Trace) => number): { trace
     analysisFor: `${fx.language}\u0000${fx.source}`,
     run: { status: "done", trace, version: 1, outcome: null, request: null, testId: null, sourceAtRun: fx.source, phase: "" },
     cursor: index,
-    editing: false,
   }));
   return { trace, index, fx };
 }

@@ -105,7 +105,6 @@ describe("line numbers that the editor cannot draw", () => {
     const base = {
       value: "a = 1\nb = 2\nc = 3\n",
       language: "python" as const,
-      readOnly: true,
       breakpoints: [] as number[],
       onChange: () => undefined,
       onToggleBreakpoint: () => undefined,

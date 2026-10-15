@@ -4,7 +4,7 @@ import { clearAllLocalData, deleteSolution, listSolutions, saveSolution } from "
 import { encodeShare, MAX_URL_LENGTH, type SharePayload, validatePayload } from "../persistence/share";
 import { DEFAULT_LIMITS, type TraceLimits } from "../trace/schema";
 import { loadExample, loadWorkspace } from "./actions";
-import { activeTest, DEFAULT_PREFS, newTest, store, toast, uid, useApp, type Workspace } from "./store";
+import { DEFAULT_PREFS, newTest, store, type TestCase, toast, uid, useApp, type Workspace } from "./store";
 
 function Modal({ title, onClose, children, wide }: { title: string; onClose(): void; children: React.ReactNode; wide?: boolean }): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
@@ -209,12 +209,6 @@ function SettingsDialog(): React.JSX.Element {
             <option value="full">Full</option>
           </select>
         </div>
-        <label className="check">
-          <input type="checkbox" checked={prefs.heatmap} onChange={(e) => store.set((s) => ({ prefs: { ...s.prefs, heatmap: e.target.checked } }))} /> Heatmap colors for tables the code writes into (DP / distances)
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={prefs.showFunctions} onChange={(e) => store.set((s) => ({ prefs: { ...s.prefs, showFunctions: e.target.checked } }))} /> Show function and class bindings in Variables
-        </label>
       </fieldset>
       <fieldset>
         <legend>Execution limits</legend>
@@ -238,23 +232,31 @@ function SettingsDialog(): React.JSX.Element {
 
 function ShareDialog(): React.JSX.Element {
   const ws = useApp((s) => s.ws);
-  const test = useApp(activeTest);
   const [url, setUrl] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const payload: SharePayload = {
     v: 1,
     language: ws.language,
     source: ws.source,
-    mode: ws.mode,
-    entry: ws.entry,
+    target: ws.target,
     title: ws.title,
-    test: { name: test.name, args: test.args, expected: test.expected, conversions: test.conversions, stdin: test.stdin },
-    ...(ws.mode === "fragment" ? { fragment: ws.fragment } : {}),
+    tests: ws.tests.map((t) => ({ args: t.args, expected: t.expected })),
+    conversions: ws.conversions,
+    stdin: ws.stdin,
   };
   useEffect(() => {
     void encodeShare(payload).then((tok) => setUrl(`${location.origin}${location.pathname}#share=${tok}`));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const tooLong = url !== null && url.length > MAX_URL_LENGTH;
+  const copy = (text: string, what: string): void =>
+    void navigator.clipboard?.writeText(text).then(
+      () => toast(`${what} copied.`),
+      () => {
+        inputRef.current?.select();
+        toast("Your browser blocked copying — the link is selected, press ⌘C / Ctrl+C.", "error");
+      },
+    );
   const download = (): void => {
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
@@ -263,30 +265,32 @@ function ShareDialog(): React.JSX.Element {
     a.click();
     URL.revokeObjectURL(a.href);
   };
+  const n = ws.tests.length;
   return (
     <Modal title="Share or export" onClose={close}>
-      <p className="dim">The code and the selected test case are compressed into the link’s #fragment, which browsers do not send to servers. Opening the link does not run anything.</p>
+      <p className="dim">
+        Shares the code exactly as it is in the editor now, with {n === 1 ? "its test case" : `all ${n} test cases`} — no need to save first. Opening the link never runs anything.
+      </p>
       {url === null ? (
         <p>Encoding…</p>
       ) : tooLong ? (
-        <p className="warn">This solution is too large for a reliable URL ({url.length} characters; limit {MAX_URL_LENGTH}). Export a file instead.</p>
+        <p className="warn">This solution is too large for a link ({url.length} characters; limit {MAX_URL_LENGTH}). Export a file instead.</p>
       ) : (
         <div className="field-col">
-          <input readOnly value={url} className="mono" aria-label="Share URL" onFocus={(e) => e.target.select()} data-testid="share-url" />
+          <input
+            ref={inputRef}
+            readOnly
+            value={url}
+            className="mono"
+            aria-label="Share URL"
+            onFocus={(e) => e.target.select()}
+            data-testid="share-url"
+          />
           <div className="field-row">
-            <button
-              type="button"
-              className="btn primary"
-              onClick={() =>
-                void navigator.clipboard?.writeText(url).then(
-                  () => toast("Link copied."),
-                  () => toast("Copy failed — select the text and copy manually.", "error"),
-                )
-              }
-            >
+            <button type="button" className="btn primary" onClick={() => copy(url, "Link")} data-testid="share-copy">
               Copy link
             </button>
-            <span className="dim small">{url.length} characters</span>
+            <span className="dim small">{url.length} characters · if a chat app cuts it off, send the .json file instead</span>
           </div>
         </div>
       )}
@@ -320,38 +324,42 @@ function ShareDialog(): React.JSX.Element {
 }
 
 export function payloadToWorkspace(p: SharePayload): Workspace {
-  const t = newTest(p.test.name, p.test.args, { expected: p.test.expected, conversions: p.test.conversions, stdin: p.test.stdin });
+  const tests = p.tests.map((t) => newTest(t.args, t.expected));
   return {
     id: uid(),
     title: p.title,
     language: p.language,
     source: p.source,
-    mode: p.mode,
-    entry: p.entry,
-    tests: [t],
-    activeTestId: t.id,
+    target: p.target,
+    tests,
+    activeTestId: (tests[0] as TestCase).id,
+    conversions: p.conversions,
+    stdin: p.stdin,
     breakpoints: [],
-    fragment: p.fragment ?? { initialState: "{}", setup: "", startLine: 1, endLine: 1 },
     updatedAt: Date.now(),
   };
 }
 
 export const SHORTCUTS: Array<[string, string]> = [
   ["Ctrl/⌘ + Enter", "Run (works inside the editor too)"],
-  ["R", "Restart — re-run current code and test"],
-  ["→", "Step into (the very next step)"],
+  ["R", "Run again"],
+  ["→", "Next — the next step, going into calls"],
   ["←", "Back one step"],
-  ["↓", "Step over (next line in this function)"],
-  ["↑", "Step back over calls"],
-  ["Shift + ↓", "Step out (to the caller)"],
+  ["↓", "Next line in this function, skipping over calls"],
+  ["↑", "Previous line in this function"],
+  ["Shift + ↓", "Finish this call and return to the caller"],
   ["Space", "Play / pause"],
   ["Home / End", "Jump to start / end"],
   ["N / Shift + N", "Next / previous breakpoint"],
-  ["B", "Toggle breakpoint on the current trace line"],
-  ["F9 (in editor)", "Toggle breakpoint on the cursor line"],
-  ["E", "Edit code (leave read-only tracing mode)"],
-  ["P", "Toggle prediction mode"],
-  ["Enter", "Submit prediction / next prediction"],
+  ["B", "Toggle a breakpoint on the current line"],
+  ["F9 (in editor)", "Toggle a breakpoint on the cursor line"],
+  ["E", "Edit the code"],
+  ["P", "Practice: guess each step before it is shown"],
+  ["Enter", "Submit a guess / next guess"],
+  ["Hover a variable", "Peek: its value at this step"],
+  ["F2 or Ctrl/⌘ + .", "Peek at the variable under the caret (Esc closes)"],
+  ["Alt + ← / → / ↓", "Back / Next / Next line while the caret is in the code"],
+  ["Tap a variable", "Touch: pin its peek; tap again or × to close"],
   ["1 – 4", "Narrow screens: Code / Visual / Variables / Stack"],
   ["?", "Show this sheet"],
   ["Esc", "Close dialogs; stop a running program"],

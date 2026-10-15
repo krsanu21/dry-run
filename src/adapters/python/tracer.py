@@ -23,13 +23,11 @@ import dis
 import itertools
 import json
 import sys
-import textwrap
 import time
 import types
 
 USER_FILE = "<dryrun>"
 HARNESS_FILE = "<dryrun-harness>"
-FRAGMENT_FN = "__dryrun_fragment__"
 CO_GENERATOR = 0x20
 _YIELD_OPS = set(dis.opmap[n] for n in ("YIELD_VALUE", "INSTRUMENTED_YIELD_VALUE") if n in dis.opmap)
 _MAX_SAFE_INT = 2 ** 53
@@ -378,7 +376,7 @@ class Tracer:
     def _visible_globals(self, g):
         out = []
         for k, v in list(g.items()):
-            if k.startswith("__") or k.startswith(FRAGMENT_FN):
+            if k.startswith("__"):
                 continue
             if isinstance(v, types.ModuleType):
                 continue
@@ -473,8 +471,6 @@ class Tracer:
                 stack.append({"id": fid, "same": True})
                 continue
             name = code.co_name
-            if name == FRAGMENT_FN:
-                name = "<fragment>"
             entry = {
                 "id": fid,
                 "name": name,
@@ -612,7 +608,7 @@ class Tracer:
         return self.local_trace
 
     # -- setup phase -------------------------------------------------------
-    # In function and fragment mode the file's top-level code runs before the traced call.
+    # In function mode the file's top-level code runs before the traced call.
     # It records nothing, but it still has to obey the limits: an endless loop or runaway
     # recursion there would otherwise only be stopped by the host's watchdog (or crash the runtime).
     def setup_start(self):
@@ -623,7 +619,7 @@ class Tracer:
         sys.settrace(self._setup_global)
 
     def _setup_global(self, frame, event, arg):
-        if self.stopped or frame.f_code.co_filename not in (USER_FILE, SETUP_FILE):
+        if self.stopped or frame.f_code.co_filename != USER_FILE:
             return None
         self.setup_depth += 1
         if self.setup_depth > self.limits["maxStackDepth"]:
@@ -674,7 +670,6 @@ class Tracer:
 
 
 _MISSING = object()
-SETUP_FILE = "<dryrun-setup>"
 SETUP_CHECK_EVERY = 512
 SETUP_MAX_STEPS = 10_000_000
 
@@ -691,7 +686,7 @@ def _user_traceback(tb):
     while tb is not None:
         if tb.tb_frame.f_code.co_filename == USER_FILE:
             name = tb.tb_frame.f_code.co_name
-            out.append({"name": "<fragment>" if name == FRAGMENT_FN else name, "line": tb.tb_lineno})
+            out.append({"name": name, "line": tb.tb_lineno})
         tb = tb.tb_next
     return out
 
@@ -793,28 +788,6 @@ def _build_tree(values, node_cls):
     return root
 
 
-def _convert_special(v, g):
-    """Fragment-mode initial values: {"$tuple": [...]}, {"$set": [...]}, {"$deque": [...]},
-    {"$linkedList": [...]}, {"$tree": [...]} construct the matching structure."""
-    if isinstance(v, list):
-        return [_convert_special(e, g) for e in v]
-    if isinstance(v, dict):
-        if len(v) == 1:
-            (k, inner), = v.items()
-            if k == "$tuple":
-                return tuple(_convert_special(e, g) for e in inner)
-            if k == "$set":
-                return set(_convert_special(e, g) if not isinstance(e, list) else tuple(e) for e in inner)
-            if k == "$deque":
-                return collections.deque(_convert_special(e, g) for e in inner)
-            if k == "$linkedList":
-                return _build_linked_list(inner, g["ListNode"])
-            if k == "$tree":
-                return _build_tree(inner, g["TreeNode"])
-        return {k: _convert_special(e, g) for k, e in v.items()}
-    return v
-
-
 def _syntax_diag(e):
     return {"severity": "error", "kind": type(e).__name__, "message": e.msg or str(e),
             "line": e.lineno or 1, "column": max(0, (e.offset or 1) - 1),
@@ -854,127 +827,60 @@ def run(request_json, post):
     old_limit = sys.getrecursionlimit()
     t0 = time.monotonic()
     try:
-        if mode == "fragment":
-            frag = req["fragment"]
-            try:
-                init = json.loads(frag.get("initialState") or "{}")
-            except ValueError as e:
-                summary["status"] = "syntax-error"
-                summary["diagnostics"].append({"severity": "error", "kind": "InitialStateError",
-                                               "message": "Initial state is not valid JSON: %s" % e, "line": 1})
-                return json.dumps(summary)
-            if not isinstance(init, dict):
-                summary["status"] = "syntax-error"
-                summary["diagnostics"].append({"severity": "error", "kind": "InitialStateError",
-                                               "message": "Initial state must be a JSON object of variable names", "line": 1})
-                return json.dumps(summary)
-            for name in init:
-                if not name.isidentifier():
-                    summary["status"] = "syntax-error"
-                    summary["diagnostics"].append({"severity": "error", "kind": "InitialStateError",
-                                                   "message": "%r is not a valid Python variable name" % name, "line": 1})
-                    return json.dumps(summary)
-            setup = frag.get("setup") or ""
-            start = int(frag.get("startLine") or 1)
-            text = textwrap.dedent(source)
-            padded = "\n" * (start - 1) + text
-            try:
-                if setup.strip():
-                    tracer.setup_start()
-                    try:
-                        exec(compile(setup, SETUP_FILE, "exec"), g)
-                    finally:
-                        sys.settrace(None)
-                    tracer.hidden.update({k: v for k, v in g.items()})
-                tree = ast.parse(padded, USER_FILE)
-                fn = ast.FunctionDef(
-                    name=FRAGMENT_FN,
-                    args=ast.arguments(posonlyargs=[], args=[ast.arg(arg=n) for n in init],
-                                       vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[]),
-                    body=tree.body or [ast.Pass()], decorator_list=[], returns=None, type_params=[])
-                fn.lineno = start
-                fn.col_offset = 0
-                last = fn.body[-1]
-                fn.end_lineno = max(start, getattr(last, "end_lineno", None) or start)
-                fn.end_col_offset = getattr(last, "end_col_offset", None) or 0
-                mod = ast.Module(body=[fn], type_ignores=[])
-                ast.fix_missing_locations(mod)
-                code = compile(mod, USER_FILE, "exec")
-            except SyntaxError as e:
-                summary["status"] = "syntax-error"
-                summary["diagnostics"].append(_syntax_diag(e))
-                return json.dumps(summary)
-            except ValueError as e:
-                raise _HarnessError("Could not build the fragment harness: %s" % e)
-            exec(code, g)
-            target = g.pop(FRAGMENT_FN)
-            values = {k: _convert_special(v, g) for k, v in init.items()}
-            summary["harnessDescription"] = (
-                "Fragment executed as the body of a function whose parameters are the initial-state "
-                "variables (%s). Setup code ran untraced first." % (", ".join(init) or "none"))
+        try:
+            code = compile(source, USER_FILE, "exec")
+        except SyntaxError as e:
+            summary["status"] = "syntax-error"
+            summary["diagnostics"].append(_syntax_diag(e))
+            return json.dumps(summary)
+        if mode == "script":
             t0 = time.monotonic()
             tracer.start()
             try:
-                result = target(**values)
+                exec(code, g)
+            finally:
+                tracer.stop()
+            tracer.terminal("complete", {})
+        else:
+            # the file's top-level code runs untraced in function mode, but under the limits
+            tracer.setup_start()
+            try:
+                exec(code, g)
+            finally:
+                sys.settrace(None)
+            entry = req.get("entry") or ""
+            parts = entry.split(".")
+            if len(parts) == 2:
+                cls = g.get(parts[0])
+                if cls is None:
+                    raise _HarnessError("Class %r is not defined" % parts[0])
+                inst = cls()
+                fn = getattr(inst, parts[1], None)
+            else:
+                fn = g.get(entry)
+            if not callable(fn):
+                raise _HarnessError("Entry point %r was not found or is not callable" % entry)
+            args = []
+            convs = req.get("argConversions") or []
+            for i, a in enumerate(req.get("args") or []):
+                try:
+                    v = json.loads(a) if a.strip() else None
+                except ValueError as e:
+                    raise _HarnessError("Argument %d is not valid JSON: %s" % (i + 1, e))
+                conv = convs[i] if i < len(convs) else "raw"
+                if conv == "linked-list":
+                    v = _build_linked_list(v, g["ListNode"])
+                elif conv == "binary-tree":
+                    v = _build_tree(v, g["TreeNode"])
+                args.append(v)
+            t0 = time.monotonic()
+            tracer.start()
+            try:
+                result = fn(*args)
             finally:
                 tracer.stop()
             tracer.terminal("complete", {"result": result})
             summary["resultJson"] = json.dumps(_to_jsonable(result))
-        else:
-            try:
-                code = compile(source, USER_FILE, "exec")
-            except SyntaxError as e:
-                summary["status"] = "syntax-error"
-                summary["diagnostics"].append(_syntax_diag(e))
-                return json.dumps(summary)
-            if mode == "script":
-                t0 = time.monotonic()
-                tracer.start()
-                try:
-                    exec(code, g)
-                finally:
-                    tracer.stop()
-                tracer.terminal("complete", {})
-            else:
-                # the file's top-level code runs untraced in function mode, but under the limits
-                tracer.setup_start()
-                try:
-                    exec(code, g)
-                finally:
-                    sys.settrace(None)
-                entry = req.get("entry") or ""
-                parts = entry.split(".")
-                if len(parts) == 2:
-                    cls = g.get(parts[0])
-                    if cls is None:
-                        raise _HarnessError("Class %r is not defined" % parts[0])
-                    inst = cls()
-                    fn = getattr(inst, parts[1], None)
-                else:
-                    fn = g.get(entry)
-                if not callable(fn):
-                    raise _HarnessError("Entry point %r was not found or is not callable" % entry)
-                args = []
-                convs = req.get("argConversions") or []
-                for i, a in enumerate(req.get("args") or []):
-                    try:
-                        v = json.loads(a) if a.strip() else None
-                    except ValueError as e:
-                        raise _HarnessError("Argument %d is not valid JSON: %s" % (i + 1, e))
-                    conv = convs[i] if i < len(convs) else "raw"
-                    if conv == "linked-list":
-                        v = _build_linked_list(v, g["ListNode"])
-                    elif conv == "binary-tree":
-                        v = _build_tree(v, g["TreeNode"])
-                    args.append(v)
-                t0 = time.monotonic()
-                tracer.start()
-                try:
-                    result = fn(*args)
-                finally:
-                    tracer.stop()
-                tracer.terminal("complete", {"result": result})
-                summary["resultJson"] = json.dumps(_to_jsonable(result))
     except DryRunAbort as e:
         tracer.stop()
         summary["status"] = "limit"
@@ -1033,7 +939,7 @@ def _names_in(node):
 
 def analyze(source):
     out = {"ok": True, "diagnostics": [], "functions": [], "classes": [], "accesses": [],
-           "heapBases": [], "entryCandidates": [], "scriptLike": True, "sizeNames": []}
+           "heapBases": [], "entryCandidates": [], "driver": False, "usesInput": False, "sizeNames": []}
     try:
         tree = ast.parse(source, USER_FILE)
     except SyntaxError as e:
@@ -1212,8 +1118,28 @@ def analyze(source):
         cands = [f["qualname"] for f in out["functions"]
                  if "className" not in f and not f["qualname"].startswith("<nested>") and not f["name"].startswith("_")]
     out["entryCandidates"] = cands
-    top_level_stmts = [n for n in tree.body if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
-                                                                  ast.Import, ast.ImportFrom))
-                       and not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))]
-    out["scriptLike"] = not cands or (bool(top_level_stmts) and not sol)
+    # "driver" code: top-level statements that call into the program (its own functions or classes,
+    # print, input) -- then running the whole file is what the code is written for
+    own = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    io = {"print", "input"}
+
+    def calls_program(node):
+        for c in ast.walk(node):
+            if isinstance(c, ast.Call):
+                f = c.func
+                if isinstance(f, ast.Name) and (f.id in own or f.id in io):
+                    return True
+                if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in own:
+                    return True
+        return False
+
+    def is_main_guard(n):
+        return isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)
+
+    top = [n for n in tree.body if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom))]
+    out["driver"] = any(is_main_guard(n) or calls_program(n) for n in top)
+    out["usesInput"] = any(
+        (isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == "input")
+        or (isinstance(c, ast.Attribute) and c.attr == "stdin")
+        for c in ast.walk(tree))
     return json.dumps(out)

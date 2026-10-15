@@ -93,7 +93,7 @@ export interface SourceLoc {
 export interface TraceFrame {
   /** Stable for the lifetime of one activation (generator frames keep it across resumes). */
   id: string;
-  /** Function name. `<module>` for the top-level script frame, `<fragment>` for fragment harness frames. */
+  /** Function name. `<module>` for the top-level script frame. */
   name: string;
   /** Current line of this frame (for caller frames: the line containing the active call). */
   line: number;
@@ -112,7 +112,7 @@ export interface ExceptionInfo {
   line?: number;
   /** true on the terminal event when nothing handled the exception. */
   uncaught?: boolean;
-  /** "setup": raised by the file's top-level code, before the traced call began (function / fragment mode). */
+  /** "setup": raised by the file's top-level code, before the traced call began (function mode). */
   phase?: "setup";
   /** Innermost-last list of (function, line) the exception traversed, when known. */
   traceback?: Array<{ name: string; line: number }>;
@@ -127,7 +127,7 @@ export interface LimitInfo {
   limit?: number;
   /** true when the event was created by the controlling thread (worker was killed). */
   synthetic?: boolean;
-  /** "setup": hit while the file's top-level code ran, before the traced call began (function / fragment mode). */
+  /** "setup": hit while the file's top-level code ran, before the traced call began (function mode). */
   phase?: "setup";
 }
 
@@ -212,7 +212,7 @@ export const DEFAULT_LIMITS: TraceLimits = {
   maxStackDepth: 400,
 };
 
-export type RunMode = "function" | "script" | "fragment";
+export type RunMode = "function" | "script";
 
 /** How a JSON argument is converted before being passed to the entry point. */
 export type ArgConversion = "auto" | "raw" | "linked-list" | "binary-tree";
@@ -228,15 +228,6 @@ export interface ExecutionRequest {
   argConversions?: ArgConversion[];
   /** script mode: text provided to input()/stdin */
   stdin?: string;
-  /** fragment mode */
-  fragment?: {
-    /** JSON object mapping variable name → initial value */
-    initialState: string;
-    /** setup code executed (untraced) before the fragment */
-    setup: string;
-    /** first editor line of the fragment, so locations map back to the editor */
-    startLine: number;
-  };
   limits: TraceLimits;
 }
 
@@ -260,6 +251,4 @@ export interface ExecutionSummary {
   /** ms spent executing user code (excluding runtime startup) */
   durationMs: number;
   startupMs?: number;
-  /** Exact text actually executed when a harness wraps or transforms the user's code. */
-  harnessDescription?: string;
 }

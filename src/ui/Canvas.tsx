@@ -8,13 +8,27 @@ import { buildPanels, VIZ_KIND_LABELS, type Binding, type VizKind, type VizPanel
 import { ArrayView } from "../viz/views/ArrayView";
 import { HeapView, MapView, QueueView, SetView } from "../viz/views/CollectionViews";
 import { ChangeLegend, changeOf, TruncationNote, useViz } from "../viz/views/common";
+
+/** The meaning of the change colours, shown until dismissed once. */
+function LegendHint(): React.JSX.Element | null {
+  const seen = useApp((s) => s.prefs.legendSeen);
+  if (seen) return null;
+  return (
+    <div className="legend-hint" data-testid="legend-hint">
+      <ChangeLegend />
+      <button type="button" className="link-btn" onClick={() => store.set((s) => ({ prefs: { ...s.prefs, legendSeen: true } }))}>
+        Got it
+      </button>
+    </div>
+  );
+}
 import { GraphView } from "../viz/views/GraphView";
 import { GridView } from "../viz/views/GridView";
 import { LinkedListView, TreeView } from "../viz/views/LinkedViews";
 import { ObjectTree } from "../viz/views/ObjectTree";
-import { goto, run } from "./actions";
+import { goto, run, setTarget } from "./actions";
 import { resultMatchFromJson } from "./InputDock";
-import { store, useApp } from "./store";
+import { store, useApp, WHOLE_FILE } from "./store";
 import { historicalNodeVars, useCurrentStep } from "./useTrace";
 
 const WIDE: ReadonlySet<VizKind> = new Set(["array", "grid", "graph", "tree", "linked-list", "heap", "pairs", "string"]);
@@ -115,7 +129,7 @@ export function Canvas(): React.JSX.Element {
           ))}
         </div>
       )}
-      <ChangeLegend />
+      <LegendHint />
     </div>
   );
 }
@@ -133,16 +147,16 @@ const LIMIT_ADVICE: Record<string, string> = {
 function Outcome({ trace, index, final, frameName, stateIndex }: { trace: Trace; index: number; final: boolean; frameName: string | undefined; stateIndex: number }): React.JSX.Element | null {
   const outcome = useApp((s) => s.run.outcome);
   const status = useApp((s) => s.run.status);
-  const mode = useApp((s) => s.ws.mode);
+  const isCall = useApp((s) => s.run.request?.mode === "function");
   const lang = useApp((s) => s.ws.language);
   const expected = useApp((s) => s.ws.tests.find((t) => t.id === s.run.testId)?.expected ?? "");
   const last = trace.last;
   if (status !== "done" || !last || !isTerminal(last)) return null;
   const atEnd = index === trace.length - 1;
   const summary = outcome?.summary;
-  const match = mode === "function" && last.type === "complete" && expected.trim() && summary ? resultMatchFromJson(summary.resultJson, summary.status, expected) : null;
+  const match = isCall && last.type === "complete" && expected.trim() && summary ? resultMatchFromJson(summary.resultJson, summary.status, expected) : null;
   const origin = nav.errorOrigin(trace);
-  // raised by the file's top-level code, before the traced call began (function / fragment mode)
+  // raised by the file's top-level code, before the traced call began
   const setup = last.type === "limit" ? last.limit?.phase === "setup" : last.type === "exception" && last.exception?.phase === "setup";
   const where = last.loc.line >= 1 ? ` (line ${last.loc.line})` : "";
 
@@ -151,7 +165,7 @@ function Outcome({ trace, index, final, frameName, stateIndex }: { trace: Trace;
   if (last.type === "complete") {
     tone = match === false ? "bad" : "ok";
     head =
-      mode === "function" ? (
+      isCall ? (
         <>
           {match === false ? "✕" : "✓"} Returned <code data-testid="outcome-result">{last.result ? formatValue(last.result, last.heap, lang, { maxLength: 120, maxDepth: 4 }) : "None"}</code>
           {match !== null && (
@@ -193,20 +207,20 @@ function Outcome({ trace, index, final, frameName, stateIndex }: { trace: Trace;
       {setup ? (
         <div className="ob-setup" data-testid="setup-note">
           <p className="ob-advice">
-            This happened in your file's top-level code{where} — outside the function being traced, so there are no steps to look through. Function mode runs top-level code
-            untraced; <strong>Script mode</strong> traces the whole file from the first line.
+            This happened in your file's top-level code{where}, before the function was called, so there are no steps to look through. Running the whole file traces it
+            from the first line.
           </p>
-          {mode !== "script" && (
+          {isCall && (
             <button
               type="button"
               className="btn primary"
               data-testid="switch-script"
               onClick={() => {
-                store.updateWs({ mode: "script" });
+                setTarget(WHOLE_FILE);
                 void run();
               }}
             >
-              Switch to Script mode and run
+              Run the whole file
             </button>
           )}
         </div>
@@ -253,10 +267,12 @@ function PanelFrame({ panel, indexVars }: { panel: VizPanel; indexVars: Readonly
     });
   };
   const showPtrMenu = panel.kind === "array" || panel.kind === "string" || panel.kind === "grid" || panel.kind === "heap" || panel.kind === "pairs";
+  const peek = ctx.peek;
+  const peekedPanel = !!peek && ((!!peek.objectId && (panel.rootId === peek.objectId || panel.nodeRoots.some((r) => r.id === peek.objectId))) || panel.names.includes(peek.name));
   const shownPtrs = [...panel.pointers, ...panel.rowPointers, ...panel.colPointers].map((p) => p.name);
   return (
     <section
-      className={`panel ${WIDE.has(panel.kind) ? "wide" : "narrow"} kind-${panel.kind}${ch && !ch.isNew ? " was-mutated" : ""}`}
+      className={`panel ${WIDE.has(panel.kind) ? "wide" : "narrow"} kind-${panel.kind}${ch && !ch.isNew ? " was-mutated" : ""}${peekedPanel ? " peek-target" : ""}`}
       aria-label={`${VIZ_KIND_LABELS[panel.kind]}: ${panel.names.join(", ")}`}
       data-testid={`panel-${overrideKey}`}
       data-kind={panel.kind}
@@ -282,38 +298,40 @@ function PanelFrame({ panel, indexVars }: { panel: VizPanel; indexVars: Readonly
           {obj && (
             <span className="dim panel-type">
               {obj.typeName}
-              {"length" in obj && typeof obj.length === "number" ? ` · len ${obj.length}` : ""} · #{obj.id.replace(/^o/, "")}
+              {"length" in obj && typeof obj.length === "number" ? ` · len ${obj.length}` : ""}
             </span>
           )}
           {ch && !ch.isNew && <span className="badge badge-changed inline">Δ mutated</span>}
           {ch?.isNew && <span className="badge badge-new inline">+ new</span>}
         </div>
-        <div className="panel-tools">
-          {showPtrMenu && (panel.candidatePointers.length > 0 || shownPtrs.length > 0) && (
-            <details className="ptr-menu">
-              <summary title="Choose which variables are drawn as pointers">Pointers</summary>
-              <div className="ptr-menu-body">
-                <p className="dim small">Detected from indexing in your code. Toggle to override.</p>
+        <details className="panel-menu">
+          <summary className="icon-btn" aria-label={`Options for ${overrideKey}`} title="Display options">
+            ⋯
+          </summary>
+          <div className="panel-menu-body">
+            <label className="field-col">
+              <span className="dim small">Show as</span>
+              <select value={overridden ? panel.kind : "auto"} onChange={(e) => setKind(e.target.value)} aria-label={`View ${overrideKey} as`}>
+                <option value="auto">Automatic ({VIZ_KIND_LABELS[panel.autoKind]})</option>
+                {KIND_OPTIONS.map((k) => (
+                  <option key={k} value={k}>
+                    {VIZ_KIND_LABELS[k]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {showPtrMenu && (panel.candidatePointers.length > 0 || shownPtrs.length > 0) && (
+              <fieldset className="ptr-menu-body">
+                <legend className="dim small">Pointers (found from indexing in your code)</legend>
                 {[...new Set([...shownPtrs, ...panel.candidatePointers, ...(ptrOv?.hide ?? [])])].map((n) => (
                   <label key={n}>
                     <input type="checkbox" checked={shownPtrs.includes(n)} onChange={(e) => togglePointer(n, e.target.checked)} /> {n}
                   </label>
                 ))}
-              </div>
-            </details>
-          )}
-          <label className="kind-select">
-            <span className="sr-only">View as</span>
-            <select value={overridden ? panel.kind : "auto"} onChange={(e) => setKind(e.target.value)} aria-label={`View ${overrideKey} as`}>
-              <option value="auto">Auto ({VIZ_KIND_LABELS[panel.autoKind]})</option>
-              {KIND_OPTIONS.map((k) => (
-                <option key={k} value={k}>
-                  {VIZ_KIND_LABELS[k]}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
+              </fieldset>
+            )}
+          </div>
+        </details>
       </header>
       <div className="panel-body">
         <PanelBody panel={panel} indexVars={indexVars} />
@@ -349,7 +367,7 @@ function PanelBody({ panel, indexVars }: { panel: VizPanel; indexVars: ReadonlyS
           prevItems={prevObj && "items" in prevObj ? prevObj.items : undefined}
           pointers={panel.pointers}
           cellRefs={panel.cellRefs}
-          heat={ctx.heatmap && panel.recurrence}
+          heat={panel.recurrence}
           variant={panel.kind === "pairs" ? "pairs" : "array"}
           label={`Array ${panel.names.join(", ")}`}
         />

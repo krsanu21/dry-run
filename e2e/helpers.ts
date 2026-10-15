@@ -33,8 +33,6 @@ export async function loadExample(page: Page, id: string): Promise<void> {
 }
 
 export async function setCode(page: Page, code: string): Promise<void> {
-  const edit = page.getByTestId("edit-code");
-  if (await edit.isVisible().catch(() => false)) await edit.click();
   await page.locator(".cm-content").click();
   await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
   await page.keyboard.press("Delete");
@@ -58,4 +56,41 @@ export async function stepCounter(page: Page): Promise<string> {
 export function expectClean(w: Watch): void {
   expect(w.external, "no network requests may leave the machine").toEqual([]);
   expect(w.errors.filter((e) => !/Download the React DevTools/.test(e)), "no console errors").toEqual([]);
+}
+
+/** Centre of `word` on the first code line containing `lineText` (page coordinates), for hovering / tapping. */
+export async function wordPoint(page: Page, lineText: string, word: string): Promise<{ x: number; y: number }> {
+  const p = await page.evaluate(
+    ([lineText, word]) => {
+      const line = [...document.querySelectorAll(".cm-line")].find((l) => (l.textContent ?? "").includes(lineText as string));
+      if (!line) return null;
+      const w = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+      const re = new RegExp(`(?<![\\w$])${(word as string).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w$])`);
+      for (let n = w.nextNode(); n; n = w.nextNode()) {
+        const m = re.exec(n.textContent ?? "");
+        if (m) {
+          const r = document.createRange();
+          r.setStart(n, m.index);
+          r.setEnd(n, m.index + (word as string).length);
+          const b = r.getBoundingClientRect();
+          return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+        }
+      }
+      return null;
+    },
+    [lineText, word],
+  );
+  if (!p) throw new Error(`"${word}" not found on a line containing "${lineText}"`);
+  return p;
+}
+
+/** Hovers a variable in the editor and returns the Trace Peek tooltip. */
+export async function hoverVar(page: Page, lineText: string, word: string): Promise<ReturnType<Page["locator"]>> {
+  const p = await wordPoint(page, lineText, word);
+  // move away first so that hovering the same word again re-opens the tooltip
+  await page.mouse.move(p.x, p.y - 60);
+  await page.mouse.move(p.x, p.y, { steps: 3 });
+  const tip = page.locator('.cm-tooltip [data-testid="peek"]').first();
+  await expect(tip).toBeVisible({ timeout: 5000 });
+  return tip;
 }

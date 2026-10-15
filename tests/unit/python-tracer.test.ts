@@ -291,38 +291,8 @@ describe("Python tracer: modes and work-in-progress code", () => {
     expect(trace.length).toBe(0);
   });
 
-  it("fragment mode runs selected lines with the provided initial state at editor line numbers", async () => {
-    const src = "    for i in range(2, len(nums)):\n        dp[i] = dp[i - 1] + dp[i - 2]\n";
-    const { trace, summary } = await tracePython({
-      source: src,
-      mode: "fragment",
-      fragment: { initialState: '{"nums": [0,0,0,0], "dp": [1, 1, 0, 0]}', setup: "", startLine: 10 },
-    });
-    expect(summary.status).toBe("completed");
-    expect(summary.harnessDescription).toContain("nums, dp");
-    expect(new Set(linesOf(trace))).toEqual(new Set([10, 11]));
-    const ret = trace.events.find((e) => e.type === "return") as TraceEvent;
-    expect(top(ret).name).toBe("<fragment>");
-    expect(show(ret, "dp")).toBe("[1, 1, 2, 3]");
-  });
 
-  it("fragment mode: missing variables raise a real NameError (no invented state)", async () => {
-    const { summary, trace } = await tracePython({ source: "x = y + 1\n", mode: "fragment", fragment: { initialState: "{}", setup: "", startLine: 1 } });
-    expect(summary.status).toBe("exception");
-    expect(trace.last?.exception?.type).toBe("NameError");
-  });
 
-  it("fragment special initial values build tuples/sets/deques/linked lists", async () => {
-    const { trace } = await tracePython({
-      source: "a = head.next.val\nb = len(seen)\nc = q[0]\n",
-      mode: "fragment",
-      fragment: { initialState: '{"head": {"$linkedList": [1,2]}, "seen": {"$set": [[0,1],[0,1]]}, "q": {"$deque": [7]}}', setup: "", startLine: 1 },
-    });
-    const ret = trace.events.find((e) => e.type === "return") as TraceEvent;
-    expect(local(ret, "a")).toEqual({ t: "int", v: 2 });
-    expect(local(ret, "b")).toEqual({ t: "int", v: 1 });
-    expect(local(ret, "c")).toEqual({ t: "int", v: 7 });
-  });
 
   it("script mode supports stdin", async () => {
     const { trace } = await tracePython({ source: "name = input()\nprint('hi', name)\n", stdin: "ada\n" });

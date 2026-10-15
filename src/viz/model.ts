@@ -234,7 +234,7 @@ function functionRange(analysis: SourceAnalysis | null, frame: TraceFrame | unde
   if (!analysis || !frame || frame.name === "<module>") return null;
   let best: [number, number] | null = null;
   for (const f of analysis.functions) {
-    if (f.name !== frame.name && frame.name !== "<fragment>") continue;
+    if (f.name !== frame.name) continue;
     if (frame.line >= f.line && frame.line <= f.endLine) {
       if (!best || f.endLine - f.line < best[1] - best[0]) best = [f.line, f.endLine];
     }

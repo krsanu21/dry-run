@@ -8,7 +8,6 @@ import { analyzeJavaScript } from "./analyze";
 export class JavaScriptAdapter implements LanguageAdapter {
   readonly language = "javascript" as const;
   readonly displayName = "JavaScript";
-  readonly modes = ["function", "script", "fragment"] as const;
 
   analyze(source: string): Promise<SourceAnalysis> {
     return Promise.resolve(analyzeJavaScript(source));

@@ -1,5 +1,5 @@
 import type { SourceAnalysis } from "../analysis/types";
-import type { ExecutionRequest, ExecutionSummary, Language, RunMode, WireEvent } from "../trace/schema";
+import type { ExecutionRequest, ExecutionSummary, Language, WireEvent } from "../trace/schema";
 
 /**
  * The contract every execution adapter implements. The UI talks only to this
@@ -31,7 +31,6 @@ export interface RunHandle {
 export interface LanguageAdapter {
   readonly language: Language;
   readonly displayName: string;
-  readonly modes: readonly RunMode[];
   analyze(source: string): Promise<SourceAnalysis>;
   run(request: ExecutionRequest, callbacks: RunCallbacks): RunHandle;
   /** Start loading the runtime ahead of the first run. */

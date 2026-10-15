@@ -237,10 +237,14 @@ describe("share links", () => {
     v: 1 as const,
     language: "python" as const,
     source: "class Solution:\n    def f(self, x):\n        return x\n".repeat(5),
-    mode: "function" as const,
-    entry: "Solution.f",
+    target: "Solution.f",
     title: "T",
-    test: { name: "c", args: ["[1,2]"], expected: "[1,2]", conversions: [], stdin: "" },
+    tests: [
+      { args: ["[1,2]"], expected: "[1,2]" },
+      { args: ["[]"], expected: "[]" },
+    ],
+    conversions: [],
+    stdin: "",
   };
   it("round-trips through compressed fragments", async () => {
     const tok = await encodeShare(payload);
@@ -249,11 +253,18 @@ describe("share links", () => {
     expect(back).toEqual(payload);
     expect(shareTokenFromHash(`#share=${tok}`)).toBe(tok);
   });
+  it("still opens links made before run targets existed (mode / entry / per-case fields)", () => {
+    const old = { v: 1, language: "python", source: "x = 1\n", mode: "script", entry: "", title: "Old", test: { name: "c", args: [], expected: "", conversions: ["linked-list"], stdin: "5\n" } };
+    expect(validatePayload(old)).toMatchObject({ target: "<file>", conversions: ["linked-list"], stdin: "5\n", tests: [{ args: [], expected: "" }] });
+    expect(validatePayload({ ...old, mode: "function", entry: "Solution.f" }).target).toBe("Solution.f");
+    expect(validatePayload({ ...old, mode: "fragment" }).target).toBe("");
+  });
   it("rejects malformed or hostile payloads", async () => {
     await expect(decodeShare("z.@@@")).rejects.toThrow();
     await expect(decodeShare("q.abc")).rejects.toThrow();
     expect(() => validatePayload({ ...payload, language: "ruby" })).toThrow();
-    expect(() => validatePayload({ ...payload, test: { args: [1] } })).toThrow();
+    expect(() => validatePayload({ ...payload, tests: [{ args: [1] }] })).toThrow();
+    expect(() => validatePayload({ ...payload, tests: [] })).toThrow();
   });
 });
 

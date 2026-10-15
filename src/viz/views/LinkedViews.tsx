@@ -82,22 +82,23 @@ export function LinkedListView({ panel }: { panel: VizPanel }): React.JSX.Elemen
             const names = labels.get(n.id) ?? [];
             const shared = (ctx.refCounts.get(n.id) ?? 0) > 1;
             return (
-              <g key={n.id} className={`ll-node st-${st}`} transform={`translate(${x(n.id)},${top})`} data-testid={`node-${n.id}`}>
+              <g key={n.id} className={`ll-node st-${st}${ctx.peek?.objectId === n.id ? " is-peeked" : ""}`} transform={`translate(${x(n.id)},${top})`} data-testid={`node-${n.id}`}>
                 {names.map((nm, k) => (
                   <text key={nm} x={NODE_W / 2} y={-18 - k * 16} textAnchor="middle" className={`node-ptr${nm.includes("@") ? " outer" : ""}`}>
                     {nm} ↓
                   </text>
                 ))}
-                <rect width={NODE_W} height={NODE_H} rx={4} onClick={() => ctx.onInspect(n.id)} />
+                <rect width={NODE_W} height={NODE_H} rx={4} />
                 <line x1={NODE_W - 16} y1={0} x2={NODE_W - 16} y2={NODE_H} className="ll-divider" />
                 <text x={(NODE_W - 16) / 2} y={NODE_H / 2} dy="0.35em" textAnchor="middle" className="node-val">
                   {n.label ? cellText(n.label, heap, ctx.language, 6) : "?"}
                 </text>
                 <circle cx={NODE_W - 8} cy={NODE_H / 2} r={2.5} className="ll-dot" />
-                <text x={NODE_W / 2} y={-5} textAnchor="middle" className="node-id">
-                  #{n.id.replace(/^o/, "")}
-                  {shared ? " ⧉" : ""}
-                </text>
+                {shared && (
+                  <text x={NODE_W / 2} y={-5} textAnchor="middle" className="node-id">
+                    ⧉
+                  </text>
+                )}
               </g>
             );
           })}
@@ -193,9 +194,8 @@ export function TreeView({ panel, stack }: { panel: VizPanel; stack: readonly Tr
                   return (
                     <g
                       key={n.id}
-                      className={`tree-node st-${st}${names.length ? " is-pointed" : ""}${onPath ? " on-path" : ""}`}
+                      className={`tree-node st-${st}${names.length ? " is-pointed" : ""}${onPath ? " on-path" : ""}${ctx.peek?.objectId === n.id ? " is-peeked" : ""}`}
                       transform={`translate(${px(n)},${py(n)})`}
-                      onClick={() => ctx.onInspect(n.id)}
                       data-testid={`tnode-${n.id}`}
                     >
                       <circle r={16} />

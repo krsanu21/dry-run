@@ -61,8 +61,10 @@ export interface SourceAnalysis {
   sizeNames?: string[];
   /** Candidate entry points, best first. */
   entryCandidates: string[];
-  /** Whether the source looks like a plain script (no entry candidates). */
-  scriptLike: boolean;
+  /** Top-level code calls into the program (its own functions/classes, print, input): it is meant to run as a whole file. */
+  driver: boolean;
+  /** The program reads standard input. */
+  usesInput: boolean;
 }
 
 export const EMPTY_ANALYSIS: SourceAnalysis = {
@@ -73,5 +75,6 @@ export const EMPTY_ANALYSIS: SourceAnalysis = {
   accesses: [],
   heapBases: [],
   entryCandidates: [],
-  scriptLike: true,
+  driver: false,
+  usesInput: false,
 };

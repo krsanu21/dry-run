@@ -3,6 +3,7 @@ import { loadCurrent, loadPrefs, saveCurrent, savePrefs } from "../persistence/d
 import { decodeShare, shareTokenFromHash } from "../persistence/share";
 import type { Diagnostic } from "../trace/schema";
 import * as nav from "../trace/navigation";
+import { resolvePeek } from "../trace/peek";
 import { activeFrame, isTerminal } from "../trace/store";
 import { VizContext, type VizContextValue } from "../viz/views/common";
 import {
@@ -14,6 +15,7 @@ import {
   nextBreakpoint,
   prevBreakpoint,
   run,
+  runTarget,
   scheduleAnalysis,
   setBreakpoints,
   setLanguage,
@@ -31,10 +33,10 @@ import {
 } from "./actions";
 import { Canvas } from "./Canvas";
 import { Dialogs, payloadToWorkspace } from "./Dialogs";
-import { CodeEditor, type EditorDiagnostic, type TraceMark } from "./Editor";
+import { CodeEditor, type EditorDiagnostic, type PeekProvider, type TraceMark } from "./Editor";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { errorHint } from "./errorHints";
-import { CallStackPanel, HistoryPanel, InspectPanel, VariablesPanel, WatchPanel } from "./Inspector";
+import { CallStackPanel, VariablesPanel } from "./Inspector";
 import { InputDock } from "./InputDock";
 import { PredictionPanel, predictionKeySubmit } from "./Prediction";
 import { DEFAULT_PREFS, type MobileTab, store, useApp } from "./store";
@@ -104,7 +106,8 @@ export function useKeyboard(): void {
             void run();
             return true;
           case "e":
-            store.set({ editing: true, mobileTab: "code" });
+            store.set({ mobileTab: "code" });
+            requestAnimationFrame(() => document.querySelector<HTMLElement>(".cm-content")?.focus());
             return true;
           case "p":
             setPredictionEnabled(!s.prediction.enabled);
@@ -224,6 +227,10 @@ function TopBar(): React.JSX.Element {
   const status = useApp((s) => s.run.status);
   const ready = useApp((s) => s.runtimeReady);
   const theme = useApp((s) => s.prefs.theme);
+  const analysis = useApp((s) => s.analysis);
+  const practice = useApp((s) => s.prediction.enabled);
+  const hasTrace = useApp((s) => !!s.run.trace && s.run.trace.length > 0);
+  const target = runTarget(ws, analysis);
   const recording = status === "starting" || status === "running";
   return (
     <header className="topbar">
@@ -243,6 +250,17 @@ function TopBar(): React.JSX.Element {
         </span>
       </div>
       <div className="tb-group tb-actions">
+        <button
+          type="button"
+          className={`btn practice-btn${practice ? " is-on" : ""}`}
+          aria-pressed={practice}
+          onClick={() => setPredictionEnabled(!practice)}
+          disabled={!hasTrace}
+          title="Practice: guess what each step does before it is shown (P)"
+          data-testid="practice"
+        >
+          Practice
+        </button>
         <button type="button" className="btn" onClick={() => store.set({ dialog: "examples" })} data-testid="open-examples">
           Examples
         </button>
@@ -258,7 +276,7 @@ function TopBar(): React.JSX.Element {
           </button>
         ) : (
           <button type="button" className="btn primary run-btn" onClick={() => void run()} data-testid="run" title="Run (Ctrl/⌘+Enter)">
-            ▶ Run
+            ▶ {target.kind === "function" ? `Run ${target.entry.split(".").pop()}` : target.kind === "file" ? "Run file" : "Run"}
           </button>
         )}
         {ws.language === "python" && !ready && !recording && (
@@ -347,16 +365,14 @@ function SharedBanner(): React.JSX.Element | null {
   );
 }
 
-function EditorPane({ onSelection }: { onSelection(r: { from: number; to: number } | null): void }): React.JSX.Element {
+function EditorPane(): React.JSX.Element {
   const ws = useApp((s) => s.ws);
-  const editing = useApp((s) => s.editing);
   const analysis = useApp((s) => s.analysis);
   const outcome = useApp((s) => s.run.outcome);
   const sourceAtRun = useApp((s) => s.run.sourceAtRun);
   const step = useCurrentStep();
   const hasTrace = !!step;
   const stale = hasTrace && sourceAtRun !== ws.source;
-  const readOnly = hasTrace && !editing;
   const runStale = sourceAtRun !== ws.source;
   const [reveal, setReveal] = useState<{ line: number; n: number } | null>(null);
   const diagnostics: EditorDiagnostic[] = useMemo(() => {
@@ -396,6 +412,31 @@ function EditorPane({ onSelection }: { onSelection(r: { from: number; to: number
   const lastEvent = step?.trace.last;
   const runtimeError = !runStale && lastEvent?.type === "exception" && lastEvent.exception?.uncaught ? lastEvent : null;
   const atRuntimeError = !!runtimeError && !!step && (step.index === nav.errorOrigin(step.trace) || step.index === runtimeError.index);
+  const selectedFrameId = useApp((s) => s.selectedFrameId);
+  const runVersion = useApp((s) => s.run.version);
+  const functions = analysis?.functions;
+  // Trace Peek reads the displayed step only — never a live runtime
+  const peekProvider: PeekProvider | null = useMemo(() => {
+    if (!step) return null;
+    const input = {
+      trace: step.trace,
+      event: step.event,
+      state: step.state,
+      prev: step.final ? undefined : step.prev,
+      diff: step.diff,
+      selectedFrameId,
+      functions: functions ?? [],
+      language: ws.language,
+    };
+    return {
+      epoch: `${runVersion}:${step.index}:${selectedFrameId ?? ""}:${stale ? "stale" : "live"}`,
+      stale,
+      query: (line, head, expr) => resolvePeek(input, { line, head, expr }, { stale }),
+      onHighlight: (h) => store.set({ peek: h }),
+      goto: (i) => goto(i),
+      step: (kind) => (kind === "into" ? stepInto() : kind === "back" ? stepBack() : stepOver()),
+    };
+  }, [step, selectedFrameId, functions, ws.language, stale, runVersion]);
   const traceMark: TraceMark | null = useMemo(() => {
     if (!step || stale) return null;
     const ev = step.event;
@@ -406,32 +447,21 @@ function EditorPane({ onSelection }: { onSelection(r: { from: number; to: number
     return { line, kind, ...(prevLine !== undefined ? { prevLine } : {}) };
   }, [step, stale]);
   return (
-    <div className={`editor-pane${readOnly ? " is-readonly" : ""}${flash ? " flash-error" : ""}`}>
+    <div className={`editor-pane${flash ? " flash-error" : ""}`}>
       <div className="editor-head">
-        {readOnly ? (
-          <>
-            <span className="mode-pill tracing">● Tracing (read-only)</span>
-            <button type="button" className="mini-btn" onClick={() => store.set({ editing: true })} data-testid="edit-code">
-              Edit code <kbd>E</kbd>
-            </button>
-          </>
-        ) : (
-          <>
-            <span className="mode-pill">Editing</span>
-            {hasTrace && (
-              <button type="button" className="mini-btn" onClick={() => store.set({ editing: false })}>
-                Back to trace
-              </button>
-            )}
-          </>
-        )}
-        {stale && (
-          <span className="stale-note">
-            Code changed since this trace —{" "}
-            <button type="button" className="link-btn" onClick={() => void run()}>
-              re-run
+        {stale ? (
+          <span className="stale-bar" role="status" data-testid="stale-bar">
+            ✎ You changed the code — the trace shows the old version.
+            <button type="button" className="btn primary small" onClick={() => void run()} data-testid="rerun">
+              ▶ Run again
             </button>
           </span>
+        ) : (
+          hasTrace && (
+            <span className="trace-pill" data-testid="trace-pill">
+              ● Tracing <span className="dim">· spotted a bug? edit the code right here</span>
+            </span>
+          )
         )}
         {firstProblem ? (
           <span className="problem-bar" data-testid="problem-bar">
@@ -460,33 +490,21 @@ function EditorPane({ onSelection }: { onSelection(r: { from: number; to: number
       <CodeEditor
         value={ws.source}
         language={ws.language}
-        readOnly={readOnly}
         breakpoints={ws.breakpoints}
         traceMark={traceMark}
         diagnostics={diagnostics}
+        peek={peekProvider}
         reveal={reveal}
         onChange={setSource}
         onToggleBreakpoint={toggleBreakpoint}
         onBreakpointsMoved={setBreakpoints}
-        onSelectionLines={onSelection}
-        onRequestEdit={() => undefined}
       />
     </div>
   );
 }
 
-type SideTab = "vars" | "watch" | "history" | "predict";
-
 function SidePanel({ only }: { only?: "vars" | "stack" }): React.JSX.Element {
-  const [tab, setTab] = useState<SideTab>("vars");
-  const historyVar = useApp((s) => s.historyVar);
-  const predEnabled = useApp((s) => s.prediction.enabled);
-  useEffect(() => {
-    if (historyVar) setTab("history");
-  }, [historyVar]);
-  useEffect(() => {
-    if (predEnabled) setTab("predict");
-  }, [predEnabled]);
+  const practice = useApp((s) => s.prediction.enabled);
   return (
     <div className="side">
       {only !== "vars" && (
@@ -496,31 +514,15 @@ function SidePanel({ only }: { only?: "vars" | "stack" }): React.JSX.Element {
         </section>
       )}
       {only !== "stack" && (
-        <section className="side-section grow" aria-label="Inspector">
-          <div className="side-tabs" role="tablist">
-            {(
-              [
-                ["vars", "Variables"],
-                ["watch", "Watch"],
-                ["history", "History"],
-                ["predict", "Predict"],
-              ] as const
-            ).map(([id, label]) => (
-              <button key={id} type="button" role="tab" aria-selected={tab === id} className={`side-tab${tab === id ? " is-on" : ""}`} onClick={() => setTab(id)} data-testid={`side-${id}`}>
-                {label}
-              </button>
-            ))}
-          </div>
+        <section className="side-section grow" aria-label="Variables">
+          {practice && (
+            <div className="practice-card">
+              <PredictionPanel />
+            </div>
+          )}
+          <h3 className="side-h">Variables</h3>
           <div className="side-body">
-            {tab === "vars" && (
-              <>
-                <InspectPanel />
-                <VariablesPanel />
-              </>
-            )}
-            {tab === "watch" && <WatchPanel />}
-            {tab === "history" && <HistoryPanel />}
-            {tab === "predict" && <PredictionPanel />}
+            <VariablesPanel />
           </div>
         </section>
       )}
@@ -563,18 +565,17 @@ export function App(): React.JSX.Element {
   const reducedMotion = useTheme();
   const step = useCurrentStep();
   const language = useApp((s) => s.ws.language);
-  const heatmap = useApp((s) => s.prefs.heatmap);
   const left = useApp((s) => s.prefs.leftWidth);
   const right = useApp((s) => s.prefs.rightWidth);
   const mobileTab = useApp((s) => s.mobileTab);
   const toastMsg = useApp((s) => s.toast);
   const runStatus = useApp((s) => s.run.status);
   const runVersion = useApp((s) => s.run.version);
+  const peek = useApp((s) => s.peek);
   const wsId = useApp((s) => s.ws.id);
   const testId = useApp((s) => s.ws.activeTestId);
-  const mode = useApp((s) => s.ws.mode);
+  const target = useApp((s) => s.ws.target);
   const narrow = useMediaQuery("(max-width: 820px)");
-  const [selection, setSelection] = useState<{ from: number; to: number } | null>(null);
 
   const vizCtx: VizContextValue | null = useMemo(
     () =>
@@ -586,12 +587,11 @@ export function App(): React.JSX.Element {
             language,
             refCounts: step.refCounts,
             firstSeen: step.trace.objectFirstSeen,
-            heatmap,
             reducedMotion,
-            onInspect: (id: string) => store.set({ inspectId: id }),
+            peek,
           }
         : null,
-    [step, language, heatmap, reducedMotion],
+    [step, language, reducedMotion, peek],
   );
 
   const resize = (which: "leftWidth" | "rightWidth", dx: number): void =>
@@ -612,10 +612,10 @@ export function App(): React.JSX.Element {
         <main className="workspace">
           <div className="col col-left" data-mobile="code">
             <ErrorBoundary region="the code editor" resetKeys={[wsId]}>
-              <EditorPane onSelection={setSelection} />
+              <EditorPane />
             </ErrorBoundary>
-            <ErrorBoundary region="the test-case panel" resetKeys={[wsId, testId, mode]} recover={{ label: "Clear the trace", run: clearTrace }}>
-              <InputDock selection={selection} />
+            <ErrorBoundary region="the test-case panel" resetKeys={[wsId, testId, target]} recover={{ label: "Clear the trace", run: clearTrace }}>
+              <InputDock />
             </ErrorBoundary>
           </div>
           <Resizer label="Resize editor" onDrag={(dx) => resize("leftWidth", dx)} />
@@ -653,6 +653,11 @@ export function App(): React.JSX.Element {
       {toastMsg && (
         <div className={`toast toast-${toastMsg.kind}`} role="status" data-testid="toast">
           {toastMsg.text}
+          {toastMsg.action && (
+            <button type="button" className="toast-action" onClick={toastMsg.action.run} data-testid="toast-action">
+              {toastMsg.action.label}
+            </button>
+          )}
         </div>
       )}
     </div>

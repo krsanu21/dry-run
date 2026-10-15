@@ -4,7 +4,7 @@
  * anywhere. Every access is wrapped so private windows / blocked storage
  * degrade to an in-memory session instead of breaking the app.
  */
-import type { Prefs, Workspace } from "../ui/store";
+import { normalizeWorkspace, type Prefs, type Workspace } from "../ui/store";
 
 const DB_NAME = "dry-run";
 const DB_VERSION = 1;
@@ -51,8 +51,11 @@ function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T
 }
 
 export async function listSolutions(): Promise<Workspace[]> {
-  const all = await tx<Workspace[]>("readonly", (s) => s.getAll() as IDBRequest<Workspace[]>);
-  return (all ?? []).sort((a, b) => b.updatedAt - a.updatedAt);
+  const all = await tx<unknown[]>("readonly", (s) => s.getAll() as IDBRequest<unknown[]>);
+  return (all ?? [])
+    .map(normalizeWorkspace)
+    .filter((w): w is Workspace => !!w)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export async function saveSolution(ws: Workspace): Promise<boolean> {
@@ -78,8 +81,7 @@ export function loadCurrent(): Workspace | null {
   try {
     const raw = localStorage.getItem(CURRENT_KEY);
     if (!raw) return null;
-    const ws = JSON.parse(raw) as Workspace;
-    return ws && typeof ws.source === "string" && Array.isArray(ws.tests) && ws.tests.length ? ws : null;
+    return normalizeWorkspace(JSON.parse(raw));
   } catch {
     return null;
   }

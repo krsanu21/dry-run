@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { TraceEvent } from "../../src/trace/schema";
 import { useKeyboard } from "../../src/ui/App";
 import { Canvas } from "../../src/ui/Canvas";
-import { CallStackPanel, HistoryPanel, VariablesPanel } from "../../src/ui/Inspector";
+import { CallStackPanel, VariablesPanel } from "../../src/ui/Inspector";
 import { store } from "../../src/ui/store";
 import { TraceBar } from "../../src/ui/TraceBar";
 import { useCurrentStep } from "../../src/ui/useTrace";
@@ -22,9 +22,7 @@ function WithViz({ children }: { children: React.ReactNode }): React.JSX.Element
         language: store.get().ws.language,
         refCounts: step.refCounts,
         firstSeen: step.trace.objectFirstSeen,
-        heatmap: true,
         reducedMotion: true,
-        onInspect: (id: string) => store.set({ inspectId: id }),
       }
     : null;
   return <VizContext.Provider value={ctx}>{children}</VizContext.Provider>;
@@ -161,12 +159,12 @@ describe("Heap, linked list, tree, graph", () => {
     render(<WithViz><Canvas /></WithViz>);
     expect(screen.getByTestId("panel-big").textContent).toMatch(/more not captured|Showing 40 of 500/);
     render(<WithViz><VariablesPanel /></WithViz>);
-    fireEvent.click(screen.getByLabelText("Expand nest"));
+    fireEvent.click(screen.getByLabelText("nest: show the whole value"));
     expect(document.body.textContent).toMatch(/not captured|depth limit/);
   });
 });
 
-describe("Call stack, variables, history", () => {
+describe("Call stack and variables", () => {
   it("selecting a caller frame shows that frame's locals", () => {
     at("dfs-components", (e) => e.type === "call" && e.stack.length === 4);
     render(
@@ -181,15 +179,17 @@ describe("Call stack, variables, history", () => {
     expect(screen.getByTestId("var-node").textContent).toContain("0");
   });
 
-  it("variable history lists value segments and jumps to events", () => {
-    const { trace } = at("two-sum", line(7), 1);
-    const fid = trace.events[0]?.stack[0]?.id as string;
-    store.set({ historyVar: { frameId: fid, name: "i" } });
-    render(<WithViz><HistoryPanel /></WithViz>);
-    const items = screen.getByTestId("history").querySelectorAll(".history-list li");
-    expect(items.length).toBe(2);
-    act(() => fireEvent.click(items[0]?.querySelector("button") as HTMLElement));
-    expect(trace.events[store.get().cursor]?.stack[0]?.locals.find(([k]) => k === "i")?.[1]).toEqual({ t: "int", v: 0 });
+  it("hides an attribute-less self, and evaluates expressions added at the end of the list", () => {
+    at("two-sum", line(7), 1);
+    render(<WithViz><VariablesPanel /></WithViz>);
+    expect(screen.queryByTestId("var-self")).toBeNull();
+    expect(screen.getByTestId("var-nums")).toBeTruthy();
+    const input = screen.getByTestId("watch-input");
+    act(() => {
+      fireEvent.change(input, { target: { value: "nums[i] + 1" } });
+      fireEvent.submit(input);
+    });
+    expect(screen.getByTestId("watch-row").textContent).toContain("8"); // nums[1] = 7
   });
 });
 
@@ -206,7 +206,7 @@ describe("controls are keyboard accessible", () => {
         <TraceBar />
       </>,
     );
-    for (const label of ["Jump to start", "Back one step", "Step into", "Step over", "Step out", "Run to next breakpoint", "Jump to end"])
+    for (const label of ["Jump to start", "Back", "Next", "Next line", "Finish call", "Previous line", "Next breakpoint", "Jump to end"])
       expect(screen.getByLabelText(label)).toBeTruthy();
     act(() => {
       fireEvent.keyDown(window, { key: "ArrowRight" });
