@@ -2922,3 +2922,57 @@ input.num {
     display: none;
   }
 }
+
+/* ---------- contained failures ---------- */
+.crash-card {
+  margin: 12px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--err) 55%, transparent);
+  border-left: 4px solid var(--err);
+  border-radius: var(--radius);
+  background: var(--err-bg);
+  overflow: auto;
+  max-height: 100%;
+}
+.crash-card.is-root {
+  max-width: 640px;
+  margin: 12vh auto 0;
+}
+.crash-card h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+.crash-card p {
+  margin: 4px 0;
+  color: var(--text-dim);
+}
+.crash-card .crash-msg {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.crash-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 6px;
+}
+.crash-card details {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.crash-card pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  background: var(--bg-1);
+  padding: 8px;
+  border-radius: 4px;
+}
+.ob-setup {
+  margin-top: 2px;
+}
+.ob-setup .btn {
+  margin-top: 8px;
+}

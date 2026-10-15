@@ -26,6 +26,7 @@ interface FrameRec {
 
 const ABORT: { readonly dryRunAbort: true } = Object.freeze({ dryRunAbort: true });
 const MAX_STDOUT = 200_000;
+const SETUP_MAX_STEPS = 10_000_000;
 const MAX_SAFE = 2 ** 53;
 
 const UNTRACED: FrameRec = Object.freeze({
@@ -236,6 +237,7 @@ export class JsTracer {
   private outTotal = 0;
   private lastLine = 1;
   private deadline = Infinity;
+  private setupTicks = 0;
   globalsGetter: Getter = () => [];
   showGlobals = false;
   traceback: Array<{ name: string; line: number }> = [];
@@ -246,6 +248,8 @@ export class JsTracer {
     this.post = post;
     this.now = now;
     this.lastFlush = now();
+    // code that runs before the traced call (top-level statements in function mode) records nothing but obeys the time limit
+    this.deadline = now() + limits.timeoutMs;
   }
 
   sid(o: object): string {
@@ -358,10 +362,20 @@ export class JsTracer {
       this.stopWithLimit(line, "time", `Stopped after ${(this.limits.timeoutMs / 1000).toFixed(1)} s (time limit).`, this.limits.timeoutMs);
   }
 
+  /** Called for statements of code that is not being traced (the setup phase). */
+  private untracedTick(line: number): void {
+    const n = ++this.setupTicks;
+    if ((n & 1023) !== 0) return;
+    if (n > SETUP_MAX_STEPS)
+      this.stopWithLimit(line, "events", `Stopped after ${SETUP_MAX_STEPS.toLocaleString("en-US")} steps of top-level code without reaching the function call (step budget).`, SETUP_MAX_STEPS);
+    if (this.now() > this.deadline)
+      this.stopWithLimit(line, "time", `Stopped after ${(this.limits.timeoutMs / 1000).toFixed(1)} s (time limit).`, this.limits.timeoutMs);
+  }
+
   stopWithLimit(line: number, kind: string, message: string, limit: number): never {
     this.aborted = true;
     this.abortInfo = { kind, message };
-    this.emitRaw(this.buildEvent("limit", line, { limit: { kind, message, limit } }));
+    this.emitRaw(this.buildEvent("limit", line, { limit: { kind, message, limit, ...(this.tracing ? {} : { phase: "setup" }) } }));
     this.flush();
     throw ABORT;
   }
@@ -373,7 +387,8 @@ export class JsTracer {
       this.outPending = "";
       this.emitRaw(ev);
     }
-    this.emitRaw(this.buildEvent(type, this.lastLine, extra, true));
+    const raised = (extra.exception as { line?: number } | undefined)?.line;
+    this.emitRaw(this.buildEvent(type, this.lastLine === 1 && raised && raised >= 1 ? raised : this.lastLine, extra, true));
     this.flush();
   }
 
@@ -414,7 +429,10 @@ export class JsTracer {
 
   L = (f: FrameRec, line: number, _col: number, getter: Getter): void => {
     if (this.aborted) throw ABORT;
-    if (!f.traced) return;
+    if (!f.traced) {
+      if (!this.tracing) this.untracedTick(line);
+      return;
+    }
     this.activate(f);
     f.line = line;
     f.getter = getter;
@@ -789,7 +807,7 @@ export function runJavaScript(request: ExecutionRequest, post: (json: string) =>
       const info = errorInfo(e);
       const tb = tracer.traceback;
       tracer.stack.length = 0;
-      tracer.terminal("exception", { exception: { ...info, line: tb[tb.length - 1]?.line, uncaught: true, traceback: tb } });
+      tracer.terminal("exception", { exception: { ...info, line: tb[tb.length - 1]?.line, uncaught: true, traceback: tb, ...(tracer.tracing ? {} : { phase: "setup" }) } });
       if (!tb.length && request.mode !== "script")
         summary.diagnostics.push({ severity: "error", kind: info.type, line: 1, message: `Failed before entering your code: ${info.message}` } satisfies Diagnostic);
     }

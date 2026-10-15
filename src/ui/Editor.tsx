@@ -20,6 +20,7 @@ import {
 import { tags as t } from "@lezer/highlight";
 import { useEffect, useRef } from "react";
 import type { Diagnostic, Language } from "../trace/schema";
+import { isLineInDoc, lineAt } from "./lines";
 
 // ---------------------------------------------------------------------------
 // Breakpoints
@@ -42,7 +43,7 @@ const breakpointField = StateField.define<RangeSet<GutterMarker>>({
     for (const e of tr.effects) {
       if (e.is(setBreakpointsEffect)) {
         const doc = tr.state.doc;
-        const ranges = e.value.filter((l) => l >= 1 && l <= doc.lines).map((l) => bpMarker.range(doc.line(l).from));
+        const ranges = e.value.filter((l) => isLineInDoc(l, doc.lines)).map((l) => bpMarker.range(doc.line(l).from));
         next = RangeSet.of(ranges, true);
       }
     }
@@ -96,17 +97,15 @@ const traceField = StateField.define<{ deco: DecorationSet; gutter: RangeSet<Gut
       if (!e.is(setTraceMark)) continue;
       const m = e.value;
       const doc = tr.state.doc;
-      if (!m || m.line < 1 || m.line > doc.lines) {
+      const l = m ? lineAt(doc, m.line) : undefined;
+      if (!m || !l) {
         deco = Decoration.none;
         g = RangeSet.empty;
         continue;
       }
       const ranges = [];
-      if (m.prevLine && m.prevLine !== m.line && m.prevLine >= 1 && m.prevLine <= doc.lines) {
-        const pl = doc.line(m.prevLine);
-        ranges.push({ from: pl.from, deco: Decoration.line({ class: "cm-trace-prev" }) });
-      }
-      const l = doc.line(m.line);
+      const pl = m.prevLine !== undefined && m.prevLine !== m.line ? lineAt(doc, m.prevLine) : undefined;
+      if (pl) ranges.push({ from: pl.from, deco: Decoration.line({ class: "cm-trace-prev" }) });
       ranges.push({ from: l.from, deco: Decoration.line({ class: `cm-trace-line cm-trace-${m.kind}` }) });
       ranges.sort((a, b) => a.from - b.from);
       deco = Decoration.set(ranges.map((r) => r.deco.range(r.from)));
@@ -190,7 +189,7 @@ const errorLensField = StateField.define<DecorationSet>({
       const doc = tr.state.doc;
       const seen = new Set<number>();
       const ranges = e.value
-        .filter((d) => d.line >= 1 && d.line <= doc.lines && d.severity !== "info")
+        .filter((d) => isLineInDoc(d.line, doc.lines) && d.severity !== "info")
         // one panel per line, errors first, at most four in total
         .sort((a, b) => (a.severity === b.severity ? a.line - b.line : a.severity === "error" ? -1 : 1))
         .filter((d) => (seen.has(d.line) ? false : (seen.add(d.line), true)))
@@ -206,12 +205,13 @@ const errorLensField = StateField.define<DecorationSet>({
 
 /** Squiggle range for a diagnostic: the reported span, else the line without its indentation; never zero-width. */
 function diagnosticRange(doc: EditorState["doc"], d: Diagnostic): { from: number; to: number } {
-  const line = doc.line(d.line);
+  const line = doc.line(Math.min(doc.lines, Math.max(1, Math.trunc(d.line) || 1)));
   const indent = /^\s*/.exec(line.text)?.[0].length ?? 0;
   let from = d.column !== undefined ? Math.min(line.to, line.from + d.column) : line.from + indent;
   let to = line.to;
-  if (d.endLine && d.endLine >= d.line && d.endLine <= doc.lines && (d.endLine !== d.line || (d.endColumn ?? 0) > (d.column ?? 0)))
-    to = Math.min(doc.line(d.endLine).to, doc.line(d.endLine).from + (d.endColumn ?? 0));
+  const endLine = d.endLine !== undefined && isLineInDoc(d.endLine, doc.lines) && d.endLine >= line.number ? doc.line(d.endLine) : undefined;
+  if (endLine && (endLine.number !== line.number || (d.endColumn ?? 0) > (d.column ?? 0)))
+    to = Math.min(endLine.to, endLine.from + (d.endColumn ?? 0));
   else if (d.column !== undefined && /Syntax|Indentation|Tab/.test(d.kind)) {
     // a syntax error points at one position: mark the token there
     const m = /^(\w+|\S)/.exec(line.text.slice(from - line.from));
@@ -394,8 +394,9 @@ export function CodeEditor(props: EditorProps): React.JSX.Element {
     const v = view.current;
     if (!v) return;
     v.dispatch({ effects: setTraceMark.of(props.traceMark) });
-    if (props.traceMark && props.traceMark.line <= v.state.doc.lines) {
-      const pos = v.state.doc.line(props.traceMark.line).from;
+    const markLine = props.traceMark ? lineAt(v.state.doc, props.traceMark.line) : undefined;
+    if (markLine) {
+      const pos = markLine.from;
       const rect = v.lineBlockAt(pos);
       const scroller = v.scrollDOM;
       if (rect.top < scroller.scrollTop + 20 || rect.bottom > scroller.scrollTop + scroller.clientHeight - 20)
@@ -407,7 +408,7 @@ export function CodeEditor(props: EditorProps): React.JSX.Element {
     const v = view.current;
     if (!v) return;
     const doc = v.state.doc;
-    const inDoc = props.diagnostics.filter((d) => d.line >= 1 && d.line <= doc.lines);
+    const inDoc = props.diagnostics.filter((d) => isLineInDoc(d.line, doc.lines));
     const diags: CmDiagnostic[] = inDoc.map((d) => ({
       ...diagnosticRange(doc, d),
       severity: d.severity,
@@ -420,8 +421,8 @@ export function CodeEditor(props: EditorProps): React.JSX.Element {
   useEffect(() => {
     const v = view.current;
     const r = props.reveal;
-    if (!v || !r || r.line < 1 || r.line > v.state.doc.lines) return;
-    const line = v.state.doc.line(r.line);
+    const line = v && r ? lineAt(v.state.doc, r.line) : undefined;
+    if (!v || !line) return;
     const indent = /^\s*/.exec(line.text)?.[0].length ?? 0;
     v.dispatch({ selection: { anchor: line.from + indent }, effects: EditorView.scrollIntoView(line.from, { y: "center" }) });
     if (!v.state.readOnly) v.focus();

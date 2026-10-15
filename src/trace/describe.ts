@@ -162,7 +162,7 @@ export function explainStep(prev: TraceEvent | undefined, cur: TraceEvent, diff:
         memory: "it used too much memory",
         crash: "the runtime stopped unexpectedly",
       };
-      now = `The run stopped here because ${why[cur.limit?.kind ?? ""] ?? "a limit was reached"}.`;
+      now = cur.limit?.phase === "setup" ? `The run stopped while loading your file, before the function was called, because ${why[cur.limit?.kind ?? ""] ?? "a limit was reached"}.` : `The run stopped here because ${why[cur.limit?.kind ?? ""] ?? "a limit was reached"}.`;
       break;
     }
   }

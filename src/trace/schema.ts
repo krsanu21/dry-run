@@ -112,6 +112,8 @@ export interface ExceptionInfo {
   line?: number;
   /** true on the terminal event when nothing handled the exception. */
   uncaught?: boolean;
+  /** "setup": raised by the file's top-level code, before the traced call began (function / fragment mode). */
+  phase?: "setup";
   /** Innermost-last list of (function, line) the exception traversed, when known. */
   traceback?: Array<{ name: string; line: number }>;
 }
@@ -125,6 +127,8 @@ export interface LimitInfo {
   limit?: number;
   /** true when the event was created by the controlling thread (worker was killed). */
   synthetic?: boolean;
+  /** "setup": hit while the file's top-level code ran, before the traced call began (function / fragment mode). */
+  phase?: "setup";
 }
 
 /**

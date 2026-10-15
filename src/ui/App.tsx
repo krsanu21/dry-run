@@ -7,6 +7,7 @@ import { activeFrame, isTerminal } from "../trace/store";
 import { VizContext, type VizContextValue } from "../viz/views/common";
 import {
   cancelRun,
+  clearTrace,
   getAdapters,
   goto,
   loadWorkspace,
@@ -31,6 +32,7 @@ import {
 import { Canvas } from "./Canvas";
 import { Dialogs, payloadToWorkspace } from "./Dialogs";
 import { CodeEditor, type EditorDiagnostic, type TraceMark } from "./Editor";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { errorHint } from "./errorHints";
 import { CallStackPanel, HistoryPanel, InspectPanel, VariablesPanel, WatchPanel } from "./Inspector";
 import { InputDock } from "./InputDock";
@@ -373,7 +375,7 @@ function EditorPane({ onSelection }: { onSelection(r: { from: number; to: number
         out.push(
           withHint(
             { severity: "error", kind: last.exception.type, message: last.exception.message, line: last.exception.line },
-            `raised at step ${Math.max(0, nav.errorOrigin(tr))}`,
+            last.exception.phase === "setup" ? "raised while loading your file" : `raised at step ${Math.max(0, nav.errorOrigin(tr))}`,
           ),
         );
     }
@@ -567,6 +569,10 @@ export function App(): React.JSX.Element {
   const mobileTab = useApp((s) => s.mobileTab);
   const toastMsg = useApp((s) => s.toast);
   const runStatus = useApp((s) => s.run.status);
+  const runVersion = useApp((s) => s.run.version);
+  const wsId = useApp((s) => s.ws.id);
+  const testId = useApp((s) => s.ws.activeTestId);
+  const mode = useApp((s) => s.ws.mode);
   const narrow = useMediaQuery("(max-width: 820px)");
   const [selection, setSelection] = useState<{ from: number; to: number } | null>(null);
 
@@ -605,20 +611,30 @@ export function App(): React.JSX.Element {
       <VizContext.Provider value={vizCtx}>
         <main className="workspace">
           <div className="col col-left" data-mobile="code">
-            <EditorPane onSelection={setSelection} />
-            <InputDock selection={selection} />
+            <ErrorBoundary region="the code editor" resetKeys={[wsId]}>
+              <EditorPane onSelection={setSelection} />
+            </ErrorBoundary>
+            <ErrorBoundary region="the test-case panel" resetKeys={[wsId, testId, mode]} recover={{ label: "Clear the trace", run: clearTrace }}>
+              <InputDock selection={selection} />
+            </ErrorBoundary>
           </div>
           <Resizer label="Resize editor" onDrag={(dx) => resize("leftWidth", dx)} />
           <div className="col col-center" data-mobile="viz">
-            <Canvas />
+            <ErrorBoundary region="the visualization" resetKeys={[step?.trace, step?.index, runVersion]} recover={{ label: "Clear the trace", run: clearTrace }}>
+              <Canvas />
+            </ErrorBoundary>
           </div>
           <Resizer label="Resize inspector" onDrag={(dx) => resize("rightWidth", dx)} />
           <div className="col col-right">
-            <div className="side-wrap">{narrow ? <SidePanel only={mobileTab === "stack" ? "stack" : "vars"} /> : <SidePanel />}</div>
+            <ErrorBoundary region="the inspector" resetKeys={[step?.trace, step?.index, runVersion]} recover={{ label: "Clear the trace", run: clearTrace }}>
+              <div className="side-wrap">{narrow ? <SidePanel only={mobileTab === "stack" ? "stack" : "vars"} /> : <SidePanel />}</div>
+            </ErrorBoundary>
           </div>
         </main>
       </VizContext.Provider>
-      <TraceBar />
+      <ErrorBoundary region="the playback controls" resetKeys={[runVersion]} recover={{ label: "Clear the trace", run: clearTrace }}>
+        <TraceBar />
+      </ErrorBoundary>
       <nav className="mobile-tabs" aria-label="Panels">
         {(
           [

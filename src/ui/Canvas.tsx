@@ -12,7 +12,7 @@ import { GraphView } from "../viz/views/GraphView";
 import { GridView } from "../viz/views/GridView";
 import { LinkedListView, TreeView } from "../viz/views/LinkedViews";
 import { ObjectTree } from "../viz/views/ObjectTree";
-import { goto } from "./actions";
+import { goto, run } from "./actions";
 import { resultMatchFromJson } from "./InputDock";
 import { store, useApp } from "./store";
 import { historicalNodeVars, useCurrentStep } from "./useTrace";
@@ -142,6 +142,9 @@ function Outcome({ trace, index, final, frameName, stateIndex }: { trace: Trace;
   const summary = outcome?.summary;
   const match = mode === "function" && last.type === "complete" && expected.trim() && summary ? resultMatchFromJson(summary.resultJson, summary.status, expected) : null;
   const origin = nav.errorOrigin(trace);
+  // raised by the file's top-level code, before the traced call began (function / fragment mode)
+  const setup = last.type === "limit" ? last.limit?.phase === "setup" : last.type === "exception" && last.exception?.phase === "setup";
+  const where = last.loc.line >= 1 ? ` (line ${last.loc.line})` : "";
 
   let tone: "ok" | "bad" | "warn" = "ok";
   let head: React.ReactNode;
@@ -171,7 +174,7 @@ function Outcome({ trace, index, final, frameName, stateIndex }: { trace: Trace;
     );
   } else {
     tone = "warn";
-    head = <>■ Stopped early: {last.limit?.kind === "events" ? `step limit reached after ${(trace.length - 1).toLocaleString()} steps` : last.limit?.kind === "stack" ? "call stack too deep" : last.limit?.kind === "time" ? "time limit reached" : last.limit?.kind === "cancelled" ? "stopped by you" : "runtime stopped"}</>;
+    head = <>■ {setup ? "Stopped while loading your file" : "Stopped early"}: {last.limit?.kind === "events" ? `step limit reached after ${(trace.length - 1).toLocaleString()} steps` : last.limit?.kind === "stack" ? "call stack too deep" : last.limit?.kind === "time" ? "time limit reached" : last.limit?.kind === "cancelled" ? "stopped by you" : "runtime stopped"}</>;
   }
 
   if (!atEnd && !final) {
@@ -187,7 +190,29 @@ function Outcome({ trace, index, final, frameName, stateIndex }: { trace: Trace;
   return (
     <div className={`outcome-banner oc-${tone}`} role="status" data-testid="outcome-banner">
       <div className="ob-head">{head}</div>
-      {last.type === "limit" && <p className="ob-advice">{LIMIT_ADVICE[last.limit?.kind ?? "events"]}</p>}
+      {setup ? (
+        <div className="ob-setup" data-testid="setup-note">
+          <p className="ob-advice">
+            This happened in your file's top-level code{where} — outside the function being traced, so there are no steps to look through. Function mode runs top-level code
+            untraced; <strong>Script mode</strong> traces the whole file from the first line.
+          </p>
+          {mode !== "script" && (
+            <button
+              type="button"
+              className="btn primary"
+              data-testid="switch-script"
+              onClick={() => {
+                store.updateWs({ mode: "script" });
+                void run();
+              }}
+            >
+              Switch to Script mode and run
+            </button>
+          )}
+        </div>
+      ) : (
+        last.type === "limit" && <p className="ob-advice">{LIMIT_ADVICE[last.limit?.kind ?? "events"]}</p>
+      )}
       {final && frameName && (
         <p className="ob-note dim">
           {last.type === "exception" ? "Showing the state when it was raised" : `Showing the final state of ${frameName === "<module>" ? "the script" : frameName}`} (step {stateIndex}).

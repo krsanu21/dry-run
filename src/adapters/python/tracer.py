@@ -327,6 +327,7 @@ class Tracer:
         self.obj_ids = {}  # id(obj) -> (obj, sid); strong refs keep ids stable for the run
         self.next_obj = 1
         self.sent = {}  # sid -> json of last sent encoding
+        self.phase = "call"  # "setup" while the file's top-level code runs before the traced call
         self.use_cache = True
         self.frame_cache = {}  # fid -> (line, local names, ids of local values) at the previous event
         self.prev_fids = set()  # frame ids present in the previous event
@@ -546,7 +547,10 @@ class Tracer:
     def _stop_with_limit(self, frame, line, kind, message, limit):
         sys.settrace(None)
         self.stopped = True
-        ev = self.build_event("limit", frame, line, {"limit": {"kind": kind, "message": message, "limit": limit}})
+        info = {"kind": kind, "message": message, "limit": limit}
+        if self.phase == "setup":
+            info["phase"] = "setup"
+        ev = self.build_event("limit", frame, line, {"limit": info})
         self._emit_raw(ev)
         self.flush()
         self.abort = DryRunAbort(kind, message, limit)
@@ -607,21 +611,61 @@ class Tracer:
             self._unwinding = None  # handled inside this frame
         return self.local_trace
 
+    # -- setup phase -------------------------------------------------------
+    # In function and fragment mode the file's top-level code runs before the traced call.
+    # It records nothing, but it still has to obey the limits: an endless loop or runaway
+    # recursion there would otherwise only be stopped by the host's watchdog (or crash the runtime).
+    def setup_start(self):
+        self.phase = "setup"
+        self.setup_steps = 0
+        self.setup_depth = 0
+        self.deadline = time.monotonic() + self.limits["timeoutMs"] / 1000.0
+        sys.settrace(self._setup_global)
+
+    def _setup_global(self, frame, event, arg):
+        if self.stopped or frame.f_code.co_filename not in (USER_FILE, SETUP_FILE):
+            return None
+        self.setup_depth += 1
+        if self.setup_depth > self.limits["maxStackDepth"]:
+            self._stop_with_limit(frame, frame.f_lineno or 1, "stack",
+                                  "Stopped: call stack exceeded %d frames (stack limit)." % self.limits["maxStackDepth"],
+                                  self.limits["maxStackDepth"])
+        return self._setup_local
+
+    def _setup_local(self, frame, event, arg):
+        if event == "line":
+            self.setup_steps += 1
+            if self.setup_steps >= SETUP_CHECK_EVERY and self.setup_steps % SETUP_CHECK_EVERY == 0:
+                if time.monotonic() > self.deadline:
+                    self._stop_with_limit(frame, frame.f_lineno or 1, "time",
+                                          "Stopped after %.1f s (time limit)." % (self.limits["timeoutMs"] / 1000.0),
+                                          self.limits["timeoutMs"])
+                if self.setup_steps > SETUP_MAX_STEPS:
+                    self._stop_with_limit(frame, frame.f_lineno or 1, "events",
+                                          "Stopped after %s steps of top-level code without reaching the function call (step budget)." % format(SETUP_MAX_STEPS, ","), SETUP_MAX_STEPS)
+        elif event == "return":
+            self.setup_depth -= 1
+        return self._setup_local
+
     # -- harness -----------------------------------------------------------
     def terminal(self, etype, extra):
         if self.stopped:
             return
         self.stopped = True
+        # a terminal event must always have a drawable line: prefer the last traced line, then the
+        # line the exception was raised on, then line 1
+        line = self.last_line or (extra.get("exception") or {}).get("line") or 1
         if self.out_pending:
             text = "".join(self.out_pending)
             self.out_pending = []
-            ev = self.build_event("stdout", None, self.last_line, stack_frames=[])
+            ev = self.build_event("stdout", None, line, stack_frames=[])
             ev["out"] = text
             self._emit_raw(ev)
-        self._emit_raw(self.build_event(etype, None, self.last_line, extra, stack_frames=[]))
+        self._emit_raw(self.build_event(etype, None, line, extra, stack_frames=[]))
         self.flush()
 
     def start(self):
+        self.phase = "call"
         self.deadline = time.monotonic() + self.limits["timeoutMs"] / 1000.0
         sys.settrace(self.global_trace)
 
@@ -630,6 +674,9 @@ class Tracer:
 
 
 _MISSING = object()
+SETUP_FILE = "<dryrun-setup>"
+SETUP_CHECK_EVERY = 512
+SETUP_MAX_STEPS = 10_000_000
 
 
 def _exc_message(e):
@@ -833,7 +880,11 @@ def run(request_json, post):
             padded = "\n" * (start - 1) + text
             try:
                 if setup.strip():
-                    exec(compile(setup, "<dryrun-setup>", "exec"), g)
+                    tracer.setup_start()
+                    try:
+                        exec(compile(setup, SETUP_FILE, "exec"), g)
+                    finally:
+                        sys.settrace(None)
                     tracer.hidden.update({k: v for k, v in g.items()})
                 tree = ast.parse(padded, USER_FILE)
                 fn = ast.FunctionDef(
@@ -885,7 +936,12 @@ def run(request_json, post):
                     tracer.stop()
                 tracer.terminal("complete", {})
             else:
-                exec(code, g)  # definitions run untraced in function mode
+                # the file's top-level code runs untraced in function mode, but under the limits
+                tracer.setup_start()
+                try:
+                    exec(code, g)
+                finally:
+                    sys.settrace(None)
                 entry = req.get("entry") or ""
                 parts = entry.split(".")
                 if len(parts) == 2:
@@ -931,9 +987,11 @@ def run(request_json, post):
         tracer.stop()
         tb = _user_traceback(e.__traceback__)
         summary["status"] = "exception"
-        tracer.terminal("exception", {"exception": {"type": "RecursionError", "message": _exc_message(e),
-                                                    "line": tb[-1]["line"] if tb else None, "uncaught": True,
-                                                    "traceback": tb[-20:]}})
+        info = {"type": "RecursionError", "message": _exc_message(e), "line": tb[-1]["line"] if tb else None,
+                "uncaught": True, "traceback": tb[-20:]}
+        if tracer.phase == "setup":
+            info["phase"] = "setup"
+        tracer.terminal("exception", {"exception": info})
     except Exception as e:
         tracer.stop()
         if tracer.abort is not None:
@@ -944,8 +1002,10 @@ def run(request_json, post):
             tb = _user_traceback(e.__traceback__)
             summary["status"] = "exception"
             line = tb[-1]["line"] if tb else None
-            tracer.terminal("exception", {"exception": {"type": type(e).__name__, "message": _exc_message(e),
-                                                        "line": line, "uncaught": True, "traceback": tb}})
+            info = {"type": type(e).__name__, "message": _exc_message(e), "line": line, "uncaught": True, "traceback": tb}
+            if tracer.phase == "setup":
+                info["phase"] = "setup"
+            tracer.terminal("exception", {"exception": info})
             if not tb and mode == "function":
                 summary["diagnostics"].append({"severity": "error", "kind": type(e).__name__,
                                                "message": "Failed before entering your code: %s" % _exc_message(e),

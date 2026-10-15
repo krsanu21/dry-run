@@ -155,6 +155,22 @@ export function loadWorkspace(ws: Workspace): void {
   scheduleAnalysis(0);
 }
 
+/** Discards the current trace and results but keeps the code and test cases. Used to recover from a failing view. */
+export function clearTrace(): void {
+  cancelRun();
+  store.set({
+    run: { status: "idle", trace: null, version: 0, outcome: null, request: null, testId: null, sourceAtRun: "", phase: "" },
+    results: {},
+    cursor: 0,
+    selectedFrameId: null,
+    playing: false,
+    editing: true,
+    historyVar: null,
+    inspectId: null,
+    prediction: { ...store.get().prediction, from: null, fields: [], outcome: null },
+  });
+}
+
 export function newSolution(language: Language): void {
   const source =
     language === "python"

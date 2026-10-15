@@ -439,3 +439,49 @@ test("18. phase 0: mid-width inspector, big grids finish and follow, error and f
   await expect(page.getByTestId("window-note")).toContainText("left..right");
   expectClean(w);
 });
+
+test("19. runaway recursion in top-level code never takes the app down, and explains itself", async ({ page }) => {
+  const w = watchPage(page);
+  await freshApp(page);
+  // the DFS from the bug report, missing `visited.add(node)`, run in Function mode (top-level code is untraced there)
+  await setCode(
+    page,
+    [
+      "from collections import defaultdict",
+      "edges = [(1, 2), (1, 3), (2, 4), (2, 5), (3, 6)]",
+      "def create_adj_list(edges):",
+      "    d = defaultdict(list)",
+      "    for i, j in edges:",
+      "        d[i].append(j)",
+      "        d[j].append(i)",
+      "    return dict(d)",
+      "graph = create_adj_list(edges)",
+      "def dfs_recursive(graph, node, visited):",
+      "    print(node)",
+      "    for nb in graph[node]:",
+      "        if nb not in visited:",
+      "            dfs_recursive(graph, nb, visited)",
+      "visited = set()",
+      "dfs_recursive(graph, 1, visited)",
+      "",
+    ].join("\n"),
+  );
+  await expect(page.getByTestId("entry-select")).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId("arg-0").fill("[[1, 2], [2, 3]]");
+  await runAndWait(page);
+  // the page is alive and says what happened, instead of going blank
+  await expect(page.locator(".cm-content")).toBeVisible();
+  const banner = page.getByTestId("outcome-banner");
+  await expect(banner).toContainText("Stopped while loading your file");
+  await expect(page.getByTestId("setup-note")).toContainText("top-level code");
+  await expect(page.getByTestId("callstack")).toContainText("dfs_recursive");
+  // one click traces the whole file instead
+  await page.getByTestId("switch-script").click();
+  await expect(page.locator(".app[data-run-status=done]")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("mode-script")).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByTestId("setup-note")).toHaveCount(0);
+  await expect(page.getByTestId("outcome-banner")).toContainText("Stopped early");
+  await expect(page.locator(".cm-content")).toBeVisible();
+  await expect(page.getByTestId("crash-card")).toHaveCount(0);
+  expectClean(w);
+});
